@@ -1,0 +1,29 @@
+OASISFormat: 0.2
+Name:        ulib
+Version:     0.0.1
+Synopsis:    A feather weight Unicode library for OCaml
+Authors:     Yoriyuki Yamagata
+License:     LGPL-3.0 with OCaml linking exception
+Plugins:     DevFiles (0.2), META (0.2), StdFiles (0.2)
+BuildTools: ocamlbuild
+
+Library ulib
+  Path:       src
+  Modules:    UChar
+
+Executable test
+  Install: false
+  Path: test
+  MainIs: test.ml
+  BuildDepends: oUnit
+
+Test test
+  Command: $test
+  
+Document ulib
+  Title: API reference for ulib
+  Type: ocamlbuild
+  InstallDir: $htmldir/ulib
+  BuildTools+: ocamldoc
+  XOCamlbuildPath: .
+  XOCamlbuildLibraries: ulib
