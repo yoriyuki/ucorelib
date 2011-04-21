@@ -1,4 +1,4 @@
-(** Unicode (ISO-UCS) characters.
+(** Unicode characters.
 
    This module implements Unicode characters.
 *)
@@ -37,7 +37,6 @@
 (* You can contact the authour by sending email to *)
 (* yori@users.sourceforge.net *)
 
-(** Unicode characters. All 31bit code points are allowed.*) 
 type t
 
 exception Out_of_range
