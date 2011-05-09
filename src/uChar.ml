@@ -53,7 +53,7 @@ let of_char = Char.code
 let chr n = 
   if (n >= 0 && n <= 0xd7ff) or (n >= 0xe000 && n <= 0x10ffff) 
   then n 
-  else invalid_arg "UChar.code"
+  else raise Out_of_range
   
 let eq (u1 : t) (u2 : t) = u1 = u2
 
