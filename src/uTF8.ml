@@ -101,7 +101,7 @@ let get s n = look s (nth s n)
 
 let add_uchar buf u =
   let masq = 0b111111 in
-  let k = UChar.uint_code u in
+  let k = UChar.code u in
   if k <= 0x7f then
     Buffer.add_char buf (Char.unsafe_chr k)
   else if k <= 0x7ff then begin

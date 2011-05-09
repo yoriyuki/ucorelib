@@ -55,3 +55,11 @@ _*//META
 /ulib.odocl
 /_oasis_simple
 /_tags
+/_build/src/uTF8.cmi
+/_build/src/uTF8.cmo
+/_build/src/uTF8.cmx
+/_build/src/uTF8.ml
+/_build/src/uTF8.ml.depends
+/_build/src/uTF8.mli
+/_build/src/uTF8.mli.depends
+/_build/src/uTF8.o
