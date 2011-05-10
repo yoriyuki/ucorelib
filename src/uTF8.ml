@@ -36,27 +36,27 @@
 
 type t = string
 type index = int
-  
+
 let look s i =
   let n' =
-    let n = Char.code s.[i] in
+    let n = Char.code (String.unsafe_get s i) in
     if n < 0x80 then n else
     if n <= 0xdf then
-      (n - 0xc0) lsl 6 lor (0x7f land (Char.code s.[i + 1]))
+      (n - 0xc0) lsl 6 lor (0x7f land (Char.code (String.unsafe_get s (i + 1))))
     else if n <= 0xef then
       let n' = n - 0xe0 in
-      let m0 = Char.code s.[i + 2] in
       let m = Char.code (String.unsafe_get s (i + 1)) in
       let n' = n' lsl 6 lor (0x7f land m) in
-      n' lsl 6 lor (0x7f land m0)
+      let m = Char.code (String.unsafe_get s (i + 2)) in
+      n' lsl 6 lor (0x7f land m)
     else
       let n' = n - 0xf0 in
-      let m0 = Char.code s.[i + 3] in
       let m = Char.code (String.unsafe_get s (i + 1)) in
       let n' = n' lsl 6 lor (0x7f land m) in
       let m = Char.code (String.unsafe_get s (i + 2)) in
       let n' = n' lsl 6 lor (0x7f land m) in
-      n' lsl 6 lor (0x7f land m0)     
+      let m = Char.code (String.unsafe_get s (i + 3)) in
+      n' lsl 6 lor (0x7f land m)     
   in
   UChar.of_int n'
 
