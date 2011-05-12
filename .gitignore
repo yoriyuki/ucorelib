@@ -63,3 +63,5 @@ _*//META
 /_build/src/uTF8.mli
 /_build/src/uTF8.mli.depends
 /_build/src/uTF8.o
+/test/#UTF-8-test.txt#
+/test/.#UTF-8-test.txt
