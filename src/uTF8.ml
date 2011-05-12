@@ -169,7 +169,8 @@ let validate s =
       if n' >= 0xd800 && n' <= 0xdfff then raise Malformed_code else
       main (i + 3)
     else if n <= 0xf4 then 
-      if trail 3 (i + 1) (n - 0xf0) < 0x10000 then raise Malformed_code else
+      let n = trail 3 (i + 1) (n - 0xf0) in
+      if n < 0x10000 or n > 0x10FFFF then raise Malformed_code else
       main (i + 4)
     else raise Malformed_code in
   main 0
