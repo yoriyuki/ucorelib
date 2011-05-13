@@ -65,3 +65,11 @@ _*//META
 /_build/src/uTF8.o
 /test/#UTF-8-test.txt#
 /test/.#UTF-8-test.txt
+/_build/src/ulib.cmi
+/_build/src/ulib.cmo
+/_build/src/ulib.cmx
+/_build/src/ulib.ml
+/_build/src/ulib.ml.depends
+/_build/src/ulib.mli
+/_build/src/ulib.mli.depends
+/_build/src/ulib.o

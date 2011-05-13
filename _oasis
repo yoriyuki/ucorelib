@@ -9,8 +9,7 @@ BuildTools: ocamlbuild
 
 Library ulib
   Path:       src
-  Modules:    UChar
-  InternalModules: UTF8
+  Modules:    Ulib
 
 Executable test
   Install: false
