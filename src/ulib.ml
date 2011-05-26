@@ -73,11 +73,12 @@
 
 (* You can contact the authour by sending email to *)
 (* yoriyuki.y@gmail.com *)
+	
+exception Out_of_range
+exception Malformed_code
 
 module UChar = struct 
   type t = int
-	
-  exception Out_of_range
       
   external code : t -> int = "%identity"
       
@@ -275,8 +276,6 @@ module UTF8 = struct
     let ipos = move s (first s) n in
     let jpos = move s ipos len in
     String.sub s ipos (jpos-ipos)
-      
-  exception Malformed_code
       
   let validate s =
     let rec trail c i a =

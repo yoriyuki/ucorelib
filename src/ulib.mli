@@ -39,10 +39,13 @@
 (* You can contact the authour by sending email to *)
 (* yori@users.sourceforge.net *)
 
+	
+exception Out_of_range
+exception Malformed_code
+
+
 module UChar : sig
   type t
-	
-  exception Out_of_range
       
 (** [char_of u] returns the Latin-1 representation of [u].
     If [u] can not be represented by Latin-1, raises Out_of_range *)
@@ -118,8 +121,6 @@ module UTF8 : sig
 
 (** UTF-8 encoded Unicode strings. The type is normal string. *)
   type t = string
-	
-  exception Malformed_code
       
 (** [validate s]
     successes if s is valid UTF-8, otherwise raises Malformed_code.
