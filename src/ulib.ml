@@ -753,44 +753,45 @@ module Text = struct
     in
     loop ()
 
-  let of_ustring ustr =
-    (* We need fast access to raw bytes: *)
-    let bytes =  ustr in
-    let byte_length = String.length bytes in
 
-    (* - [rope] is the accumulator
-       - [start_byte_idx] is the byte position of the current slice
-       - [current_byte_idx] is the current byte position
-       - [slice_size] is the number of unicode characters contained
-       between [start_byte_idx] and [current_byte_idx] *)
-    let rec loop rope start_byte_idx current_byte_idx slice_size =
-      if current_byte_idx = byte_length then begin
+let of_ustring ustr =
+  (* We need fast access to raw bytes: *)
+  let bytes = UTF8.to_string_unsafe ustr in
+  let byte_length = String.length bytes in
 
-        if slice_size = 0 then
-          rope
-        else
-          add_slice rope start_byte_idx current_byte_idx slice_size
+  (* - [rope] is the accumulator
+     - [start_byte_idx] is the byte position of the current slice
+     - [current_byte_idx] is the current byte position
+     - [slice_size] is the number of unicode characters contained
+     between [start_byte_idx] and [current_byte_idx] *)
+  let rec loop rope start_byte_idx current_byte_idx slice_size =
+    if current_byte_idx = byte_length then begin
 
-      end else begin
-        let next_byte_idx = UTF8.next ustr current_byte_idx in
+      if slice_size = 0 then
+        rope
+      else
+        add_slice rope start_byte_idx current_byte_idx slice_size
 
-        if slice_size = leaf_size then
-          (* We have enough unicode characters for this slice, extract
-             it and add a leaf to the rope: *)
-          loop (add_slice rope start_byte_idx current_byte_idx slice_size)
-            next_byte_idx next_byte_idx 0
-        else
-          loop rope start_byte_idx next_byte_idx (slice_size + 1)
-      end
-    and add_slice rope start_byte_idx end_byte_idx slice_size =
-      append rope (Leaf(slice_size,
-                        (* This is correct, we are just extracting a
-                           sequence of well-formed UTF-8 encoded unicode
-                           characters: *)
-                        UTF8.of_string_unsafe
-                          (String.sub bytes start_byte_idx (end_byte_idx - start_byte_idx))))
-    in
-    loop Empty 0 0 0
+    end else begin
+      let next_byte_idx = UTF8.next ustr current_byte_idx in
+
+      if slice_size = leaf_size then
+        (* We have enough unicode characters for this slice, extract
+           it and add a leaf to the rope: *)
+        loop (add_slice rope start_byte_idx current_byte_idx slice_size)
+          next_byte_idx next_byte_idx 0
+      else
+        loop rope start_byte_idx next_byte_idx (slice_size + 1)
+    end
+  and add_slice rope start_byte_idx end_byte_idx slice_size =
+    append rope (Leaf(slice_size,
+                      (* This is correct, we are just extracting a
+                         sequence of well-formed UTF-8 encoded unicode
+                         characters: *)
+                      UTF8.of_string_unsafe
+                        (String.sub bytes start_byte_idx (end_byte_idx - start_byte_idx))))
+  in
+  loop Empty 0 0 0
 
   let of_string s =
     (* Validate + unsafe to avoid an extra copy (it is OK because
