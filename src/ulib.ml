@@ -105,6 +105,7 @@ module UChar = struct
   let of_int n = chr n
 end
 
+type uchar = UChar.t
 
 (** UTF-8 encoded Unicode strings. The type is normal string. *)
 
@@ -1278,4 +1279,63 @@ let of_list l =
 
 
   (* =end *)
+end
+
+type text = Text.t
+
+module type Monad = sig
+  type 'a m
+    (** The type of a monad producing values of type ['a].*)
+
+  val bind : 'a m -> ('a -> 'b m) -> 'b m
+    (** Monadic binding.
+
+	[bind m f] executes first [m] then [f], using the
+	result of [m]. *)
+
+  val (>>=) : 'a m -> ('a -> 'b m) -> 'b m
+
+  val (>>) : 'a m -> 'b m -> 'b m
+
+  val return: 'a -> 'a m
+    (**Return a value, that is, put a value in the monad.*)
+end
+
+module type ByteInputMonad = sig
+  include Monad
+
+  val get_char : char option m
+  val get_string : int -> string m
+end
+
+module type ByteOutputMonad = sig
+  include Monad
+
+  val putc : char -> unit m
+  val puts : string -> unit m
+  val flush : unit -> unit m
+  val close_out : unit -> unit m
+end
+
+module type InputMoand = sig
+  include Monad
+
+  val get_uchar : uchar option m
+  val get_text : int -> text m
+  val get_line : text m
+end
+
+module ErrorMonad = struct
+  type 'a m = Return of 'a | Error of exn
+
+  let bind v f = 
+    match v with
+      Return v -> f v
+    | (Error exn) as x -> x
+
+  let (>>=) = bind
+
+  let (>>) a b = bind a (fun _ -> b)
+
+  let return v = Return v
 end
