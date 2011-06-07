@@ -43,16 +43,9 @@ _*//META
 /_build/ulib.cma
 /_build/ulib.cmxa
 /_build/ulib.mllib
-/configure
-/myocamlbuild.ml
 /setup.data
 /setup.log
-/setup.ml
-/src/META
-/src/ulib.mllib
 /test.byte
-/ulib.mllib
-/ulib.odocl
 /_oasis_simple
 /_tags
 /_build/src/uTF8.cmi
