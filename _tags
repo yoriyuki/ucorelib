@@ -1,0 +1,8 @@
+# OASIS_START
+# DO NOT EDIT (digest: c7884d02e98be97b29a8caa0799bb19b)
+# Library ulib
+"src": include
+# Executable test
+"test/test.byte": pkg_oUnit
+<test/*.ml{,i}>: pkg_oUnit
+# OASIS_STOP

@@ -3,8 +3,6 @@
 .cm[oxi]
 *~
 _*//META
-/META
-/Makefile
 /_build/_digests
 /_build/_log
 /_build/myocamlbuild
@@ -47,7 +45,6 @@ _*//META
 /setup.log
 /test.byte
 /_oasis_simple
-/_tags
 /_build/src/uTF8.cmi
 /_build/src/uTF8.cmo
 /_build/src/uTF8.cmx
