@@ -1283,7 +1283,7 @@ end
 
 type text = Text.t
 
-module type Monad = sig
+module type MonadType = sig
   type 'a m
     (** The type of a monad producing values of type ['a].*)
 
@@ -1301,15 +1301,92 @@ module type Monad = sig
     (**Return a value, that is, put a value in the monad.*)
 end
 
-module type ByteInputMonad = sig
-  include Monad
 
-  val get_char : char option m
+module type ByteInputMonadType = sig
+  include MonadType
+  type state
+
+  val get_char : char m
   val get_string : int -> string m
+  val eval : state -> 'a m -> 'a 
 end
 
-module type ByteOutputMonad = sig
-  include Monad
+module ByteInputChannelMonad = struct
+  type state = in_channel
+
+  type 'a m = state -> 'a * state
+
+  let bind a b = 
+    fun st ->
+      let (v, st') = a st in
+      b v st'
+
+  let (>>=) = bind
+
+  let (>>) a b = bind a (fun _ -> b)
+
+  let return v = fun st -> (v, st)
+
+  let eval st f = fst (f st)
+
+  let get_char inchan = (input_char inchan, inchan)
+
+  let get_string len inchan =
+    let len = if len <= 0 then 
+      in_channel_length inchan 
+    else 
+      len in
+    let buf = String.create len in
+    let len = input inchan buf 0 len in
+    if len = 0 then raise End_of_file else
+    (String.sub buf 0 len, inchan)
+
+  let init_state st = st
+end
+
+ module ByteStringMonad = struct
+  type state = {buf : string; pos : int}
+
+  type 'a m = state -> 'a * state
+
+  let get_char st =
+    if st.pos >= String.length st.buf then
+      raise End_of_file 
+    else
+      (st.buf.[st.pos],
+       {buf = st.buf; pos = st.pos + 1})
+
+  let get_string len st =
+    if st.pos >= String.length st.buf then raise End_of_file else
+    let len = if len <= 0 then 
+      String.length st.buf - st.pos 
+    else 
+      len in
+    let s = 
+      if st.pos = 0 && len >= String.length st.buf then 
+	st.buf
+      else
+	String.sub st.buf st.pos len in
+    (s, {buf = st.buf; pos = st.pos + len})
+
+  let bind a b = 
+    fun st ->
+      let (v, st') = a st in
+      b v st'
+
+  let (>>=) = bind
+
+  let (>>) a b = bind a (fun _ -> b)
+
+  let return v = fun st -> (v, st)
+
+  let eval st f = fst (f st)
+
+  let init_state s = {buf = s; pos = 0}
+end
+
+module type ByteOutputMonadType = sig
+  include MonadType
 
   val putc : char -> unit m
   val puts : string -> unit m
@@ -1317,10 +1394,10 @@ module type ByteOutputMonad = sig
   val close_out : unit -> unit m
 end
 
-module type InputMoand = sig
-  include Monad
+module type InputMoandType = sig
+  include MonadType
 
-  val get_uchar : uchar option m
+  val get_uchar : uchar m
   val get_text : int -> text m
   val get_line : text m
 end
