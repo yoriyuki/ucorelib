@@ -673,7 +673,7 @@ type text = Text.t
 
 (** (Co)Monad *)
 
-module type Monad = sig
+module type MonadType = sig
   type 'a m
     (** The type of a monad producing values of type ['a].*)
 
@@ -691,15 +691,27 @@ module type Monad = sig
     (**Return a value, that is, put a value in the monad.*)
 end
 
-module type ByteInputMonad = sig
-  include Monad
+module type ByteInputMonadType = sig
+  include MonadType
+  type state
 
-  val get_char : char option m
+  val get_char : char m
   val get_string : int -> string m
+  val eval : state -> 'a m -> 'a 
 end
 
-module type ByteOutputMonad = sig
-  include Monad
+module ByteInputChannelMonad : sig
+  include ByteInputMonadType
+  val init_state : in_channel -> state
+end
+
+module ByteStringMonad : sig
+  include ByteInputMonadType
+  val init_state : string -> state
+end
+
+module type ByteOutputMonadType = sig
+  include MonadType
 
   val putc : char -> unit m
   val puts : string -> unit m
@@ -707,10 +719,10 @@ module type ByteOutputMonad = sig
   val close_out : unit -> unit m
 end
 
-module type InputMoand = sig
-  include Monad
+module type InputMoandType = sig
+  include MonadType
 
-  val get_uchar : uchar option m
+  val get_uchar : uchar m
   val get_text : int -> text m
   val get_line : text m
 end
