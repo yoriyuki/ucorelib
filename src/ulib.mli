@@ -670,7 +670,7 @@ type text = Text.t
 
 (** Channel modules *)
 
-module type InputCharStream = sig
+module type InputCharChannel = sig
   type t
 
   (** Get one character.  It block until a chacarter available.  If
@@ -683,7 +683,7 @@ module type InputCharStream = sig
   val mget : t -> int -> string
 end
 
-module type InputUnicodeStream = sig
+module type InputUnicodeChannel = sig
   type t
 
   (** Get one unicode character.  It block until a chacarter available.  If
@@ -699,7 +699,7 @@ module type InputUnicodeStream = sig
   val mget : t -> int -> string
 end
 
-module type OutputCharStream = sig
+module type OutputCharChannel = sig
   type t
   
   (** [put chan c] outputs [c] to [chan].  If [chan] is closed, it
@@ -718,7 +718,7 @@ module type OutputCharStream = sig
 
 end
 
-module type OutputUnicodeStream = sig
+module type OutputUnicodeChannel = sig
   type t
   
   (** [put chan u] outputs [u] to [chan].  If [chan] is closed, it
@@ -734,5 +734,10 @@ module type OutputUnicodeStream = sig
 
   (** Close the channel. *) 
   val close : t -> unit
-
 end
+
+module InChannel :  InputCharChannel with type t = in_channel
+(* module OutChannel : OutputCharChannel with type t = out_channel *)
+
+(* module StringInChannel : InputCharchannel with type t = string *)
+(* module BufferOutChannel : OutputCharChannel with type t = Buffer.t *)
