@@ -1283,136 +1283,71 @@ end
 
 type text = Text.t
 
-module type MonadType = sig
-  type 'a m
-    (** The type of a monad producing values of type ['a].*)
+(** Channel modules *)
 
-  val bind : 'a m -> ('a -> 'b m) -> 'b m
-    (** Monadic binding.
+module type InputCharStream = sig
+  type t
 
-	[bind m f] executes first [m] then [f], using the
-	result of [m]. *)
+  (** Get one character.  It block until a chacarter available.  If
+  there is no character, raise End_of_file. *) 
+  val get : t -> char
 
-  val (>>=) : 'a m -> ('a -> 'b m) -> 'b m
-
-  val (>>) : 'a m -> 'b m -> 'b m
-
-  val return: 'a -> 'a m
-    (**Return a value, that is, put a value in the monad.*)
+  (** [mget chan m] gets at most [m] characters from the [chan]. If
+  there is no character, raise End_of_file.  If [chan] is
+  non-blocking, it can return empty string.*) 
+  val mget : t -> int -> string
 end
 
+module type InputUnicodeStream = sig
+  type t
 
-module type ByteInputMonadType = sig
-  include MonadType
-  type state
+  (** Get one unicode character.  It block until a chacarter available.  If
+  there is no character, raise End_of_file. *)  
+  val get : t -> uchar
 
-  val get_char : char m
-  val get_string : int -> string m
-  val eval : state -> 'a m -> 'a 
+  (** [mget chan m] gets at most [m] unicode characters from the
+  [chan]. If there is no character, raise End_of_file.  If [chan] is
+  non-blocking, it can return empty string. *) 
+  val mget : t -> int -> text
+
+  (** UTF-8 string version of the above.*) 
+  val mget : t -> int -> string
 end
 
-module ByteInputChannelMonad = struct
-  type state = in_channel
+module type OutputCharStream = sig
+  type t
+  
+  (** [put chan c] outputs [c] to [chan].  If [chan] is closed, it
+  raises End_of_file.  *)
+  val put : t -> char -> unit
 
-  type 'a m = state -> 'a * state
+  (** [mput chan string] outputs [string] to [chan].  If [chan] is closed, it
+  raises End_of_file.  *)
+  val mput : t -> string -> unit
 
-  let bind a b = 
-    fun st ->
-      let (v, st') = a st in
-      b v st'
+  (** Flush the channel. *)
+  val flush : t -> unit
 
-  let (>>=) = bind
+  (** Close the channel. *) 
+  val close : t -> unit
 
-  let (>>) a b = bind a (fun _ -> b)
-
-  let return v = fun st -> (v, st)
-
-  let eval st f = fst (f st)
-
-  let get_char inchan = (input_char inchan, inchan)
-
-  let get_string len inchan =
-    let len = if len <= 0 then 
-      in_channel_length inchan 
-    else 
-      len in
-    let buf = String.create len in
-    let len = input inchan buf 0 len in
-    if len = 0 then raise End_of_file else
-    (String.sub buf 0 len, inchan)
-
-  let init_state st = st
 end
 
- module ByteStringMonad = struct
-  type state = {buf : string; pos : int}
+module type OutputUnicodeStream = sig
+  type t
+  
+  (** [put chan u] outputs [u] to [chan].  If [chan] is closed, it
+  raises End_of_file.  *)
+  val put : t -> uchar -> unit
 
-  type 'a m = state -> 'a * state
+  (** [mput chan text] outputs [text] to [chan].  If [chan] is closed, it
+  raises End_of_file.  *)
+  val mput : t -> string -> unit
 
-  let get_char st =
-    if st.pos >= String.length st.buf then
-      raise End_of_file 
-    else
-      (st.buf.[st.pos],
-       {buf = st.buf; pos = st.pos + 1})
+  (** Flush the channel. *)
+  val flush : t -> unit
 
-  let get_string len st =
-    if st.pos >= String.length st.buf then raise End_of_file else
-    let len = if len <= 0 then 
-      String.length st.buf - st.pos 
-    else 
-      len in
-    let s = 
-      if st.pos = 0 && len >= String.length st.buf then 
-	st.buf
-      else
-	String.sub st.buf st.pos len in
-    (s, {buf = st.buf; pos = st.pos + len})
+  (** Close the channel. *) 
+  val close : t -> unit
 
-  let bind a b = 
-    fun st ->
-      let (v, st') = a st in
-      b v st'
-
-  let (>>=) = bind
-
-  let (>>) a b = bind a (fun _ -> b)
-
-  let return v = fun st -> (v, st)
-
-  let eval st f = fst (f st)
-
-  let init_state s = {buf = s; pos = 0}
-end
-
-module type ByteOutputMonadType = sig
-  include MonadType
-
-  val putc : char -> unit m
-  val puts : string -> unit m
-  val flush : unit -> unit m
-  val close_out : unit -> unit m
-end
-
-module type InputMoandType = sig
-  include MonadType
-
-  val get_uchar : uchar m
-  val get_text : int -> text m
-  val get_line : text m
-end
-
-module ErrorMonad = struct
-  type 'a m = Return of 'a | Error of exn
-
-  let bind v f = 
-    match v with
-      Return v -> f v
-    | (Error exn) as x -> x
-
-  let (>>=) = bind
-
-  let (>>) a b = bind a (fun _ -> b)
-
-  let return v = Return v
 end

@@ -39,10 +39,8 @@
 (* You can contact the authour by sending email to *)
 (* yori@users.sourceforge.net *)
 
-	
 exception Out_of_range
 exception Malformed_code
-
 
 module UChar : sig
   type t
@@ -669,3 +667,72 @@ end
 
 (** Aliase for Text.t *)
 type text = Text.t
+
+(** Channel modules *)
+
+module type InputCharStream = sig
+  type t
+
+  (** Get one character.  It block until a chacarter available.  If
+  there is no character, raise End_of_file. *) 
+  val get : t -> char
+
+  (** [mget chan m] gets at most [m] characters from the [chan]. If
+  there is no character, raise End_of_file.  If [chan] is
+  non-blocking, it can return empty string.*) 
+  val mget : t -> int -> string
+end
+
+module type InputUnicodeStream = sig
+  type t
+
+  (** Get one unicode character.  It block until a chacarter available.  If
+  there is no character, raise End_of_file. *)  
+  val get : t -> uchar
+
+  (** [mget chan m] gets at most [m] unicode characters from the
+  [chan]. If there is no character, raise End_of_file.  If [chan] is
+  non-blocking, it can return empty string. *) 
+  val mget : t -> int -> text
+
+  (** UTF-8 string version of the above.*) 
+  val mget : t -> int -> string
+end
+
+module type OutputCharStream = sig
+  type t
+  
+  (** [put chan c] outputs [c] to [chan].  If [chan] is closed, it
+  raises End_of_file.  *)
+  val put : t -> char -> unit
+
+  (** [mput chan string] outputs [string] to [chan].  If [chan] is closed, it
+  raises End_of_file.  *)
+  val mput : t -> string -> unit
+
+  (** Flush the channel. *)
+  val flush : t -> unit
+
+  (** Close the channel. *) 
+  val close : t -> unit
+
+end
+
+module type OutputUnicodeStream = sig
+  type t
+  
+  (** [put chan u] outputs [u] to [chan].  If [chan] is closed, it
+  raises End_of_file.  *)
+  val put : t -> uchar -> unit
+
+  (** [mput chan text] outputs [text] to [chan].  If [chan] is closed, it
+  raises End_of_file.  *)
+  val mput : t -> string -> unit
+
+  (** Flush the channel. *)
+  val flush : t -> unit
+
+  (** Close the channel. *) 
+  val close : t -> unit
+
+end
