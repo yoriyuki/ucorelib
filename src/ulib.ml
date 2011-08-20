@@ -1297,7 +1297,6 @@ module type InputCharChannel = sig
   non-blocking, it can return empty string.*) 
   val mget : t -> int -> string
 end
-
 module type InputUnicodeChannel = sig
   type t
 
@@ -1311,7 +1310,7 @@ module type InputUnicodeChannel = sig
   val mget : t -> int -> text
 
   (** UTF-8 string version of the above.*) 
-  val mget : t -> int -> string
+  val mget_string : t -> int -> string
 end
 
 module type OutputCharChannel = sig
@@ -1342,7 +1341,12 @@ module type OutputUnicodeChannel = sig
 
   (** [mput chan text] outputs [text] to [chan].  If [chan] is closed, it
   raises End_of_file.  *)
-  val mput : t -> string -> unit
+  val mput : t -> text -> unit
+
+  (** [mput chan s] outputs UTF-8 encoded string [s] to [chan].  If
+  [chan] is closed, it raises Sys_error.  *)
+  val mput_string : t ->  string -> unit
+
 
   (** Flush the channel. *)
   val flush : t -> unit
@@ -1374,4 +1378,36 @@ module OutChannel = struct
   let flush = flush
 
   let close = close_out
+end
+
+module StringInChannel = struct
+  type t = string * (int ref)
+
+  let of_string s = (s, ref 0)
+
+  let get (s, r) = 
+    if !r >= String.length s then raise End_of_file else
+    let c = s.[!r] in
+    incr r;
+    c
+  
+ let mget (s, r) len = 
+   if !r >= String.length s then raise End_of_file else
+   let len' = if !r + len < String.length s then len else String.length s - !r in
+   let s' = String.sub s !r len' in
+   r := !r + len;
+   s'
+  
+end
+
+module BufferOutChannel = struct
+  type t = Buffer.t
+
+  let put = Buffer.add_char
+
+  let mput = Buffer.add_string
+
+  let flush _ = ()
+
+  let close _ = ()
 end

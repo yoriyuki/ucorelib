@@ -63,3 +63,4 @@ _*//META
 /_build/src/ulib.mli
 /_build/src/ulib.mli.depends
 /_build/src/ulib.o
+/test/Dao.txt
