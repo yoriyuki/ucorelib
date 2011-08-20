@@ -1363,3 +1363,15 @@ module InChannel = struct
     String.sub b 0 len 
 
 end
+
+module OutChannel = struct
+  type t = out_channel
+
+  let put = output_char
+
+  let mput = output_string
+
+  let flush = flush
+
+  let close = close_out
+end

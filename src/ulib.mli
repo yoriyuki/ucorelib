@@ -722,11 +722,11 @@ module type OutputUnicodeChannel = sig
   type t
   
   (** [put chan u] outputs [u] to [chan].  If [chan] is closed, it
-  raises End_of_file.  *)
+  raises Sys_error.  *)
   val put : t -> uchar -> unit
 
   (** [mput chan text] outputs [text] to [chan].  If [chan] is closed, it
-  raises End_of_file.  *)
+  raises Sys_error.  *)
   val mput : t -> string -> unit
 
   (** Flush the channel. *)
@@ -737,7 +737,7 @@ module type OutputUnicodeChannel = sig
 end
 
 module InChannel :  InputCharChannel with type t = in_channel
-(* module OutChannel : OutputCharChannel with type t = out_channel *)
+module OutChannel : OutputCharChannel with type t = out_channel
 
 (* module StringInChannel : InputCharchannel with type t = string *)
 (* module BufferOutChannel : OutputCharChannel with type t = Buffer.t *)
