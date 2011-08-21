@@ -1411,3 +1411,32 @@ module BufferOutChannel = struct
 
   let close _ = ()
 end
+
+
+module CharEncoding = struct
+
+  (** Conversion from byte strings to text *)
+  module type InputConverter = sig
+    type state
+    val convert : state -> string -> (state * text)
+    val eof : state -> text
+  end
+
+  (** Conversion from byte strings to text *)
+  module type OutputConverter = sig
+    type state
+    val convert : state -> text -> (state * string)
+    val flush : state -> (state * string)
+    val close : state -> string
+  end
+
+  type t = {input : (module InputConverter); output : (module OutputConverter)}
+
+  let create input output = {input = input; output = output}
+
+  let encodings = Hashtbl.create 0
+
+  let register name enc = Hashtbl.add encodings name enc
+
+  let unregister name = Hashtbl.remove encodings name
+end

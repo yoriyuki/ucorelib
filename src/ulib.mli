@@ -750,3 +750,32 @@ module StringInChannel : sig
 end
 
 module BufferOutChannel : OutputCharChannel with type t = Buffer.t
+
+module CharEncoding : sig
+
+  type t
+
+  (** Conversion from byte strings to text *)
+  module type InputConverter = sig
+    type state
+    val convert : state -> string -> (state * text)
+    val eof : state -> text
+  end
+
+  (** Conversion from byte strings to text *)
+  module type OutputConverter = sig
+    type state
+    val convert : state -> text -> (state * string)
+    val flush : state -> (state * string)
+    val close : state -> string
+  end
+
+  val create : (module InputConverter) -> (module OutputConverter) -> t
+
+  (** Register the encoding t by the name [string] *)
+  val register : string -> t -> unit
+
+  (** Remove the encoding which is registered by the name [string] *)
+  val unregister : string -> unit
+
+end
