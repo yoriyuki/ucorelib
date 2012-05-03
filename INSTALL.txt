@@ -1,5 +1,5 @@
 (* OASIS_START *)
-(* DO NOT EDIT (digest: eecf658cbebd124f70ad20af129a44ee) *)
+(* DO NOT EDIT (digest: 4e73ad090354a008cffa66c72b103fe9) *)
 This is the INSTALL file for the ulib distribution.
 
 This package uses OASIS to generate its build system. See section OASIS for
@@ -11,6 +11,8 @@ Dependencies
 In order to compile this package, you will need:
 * ocaml for all, test test, doc ulib
 * findlib
+* core for library ulib
+* async for library ulib
 * oUnit for executable test
 
 Installing

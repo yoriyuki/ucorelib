@@ -1,8 +1,18 @@
 # OASIS_START
-# DO NOT EDIT (digest: c7884d02e98be97b29a8caa0799bb19b)
+# DO NOT EDIT (digest: 49a48618e4381f5c8d60aba92b0b126f)
 # Library ulib
 "src": include
+<src/ulib.{cma,cmxa}>: oasis_library_ulib_byte
+<src/*.ml{,i}>: oasis_library_ulib_byte
+<src/ulib.{cma,cmxa}>: oasis_library_ulib_native
+<src/*.ml{,i}>: oasis_library_ulib_native
+<src/*.ml{,i}>: pkg_core
+<src/*.ml{,i}>: pkg_async
 # Executable test
+"test/test.byte": oasis_executable_test_byte
+<test/*.ml{,i}>: oasis_executable_test_byte
+"test/test.byte": oasis_executable_test_native
+<test/*.ml{,i}>: oasis_executable_test_native
 "test/test.byte": pkg_oUnit
 <test/*.ml{,i}>: pkg_oUnit
 # OASIS_STOP

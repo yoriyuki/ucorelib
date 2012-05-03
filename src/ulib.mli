@@ -669,3 +669,4 @@ end
 
 (** Aliase for Text.t *)
 type text = Text.t
+
