@@ -669,4 +669,89 @@ end
 
 (** Aliase for Text.t *)
 type text = Text.t
+type cursor = int
+
+module CharEncoding : sig
+
+  module type Encoder = sig
+    (** internal state of an encoder *) 
+    type state
+
+    (** Initial state *)    
+    val init : state
+
+    (** [encode state text] tries to encode [text] under the [state].
+        It returns the new state, encoding result, and the last
+        position of the text where the encoding is successful. *)
+    val encode : state * text -> state * string * cursor
+    
+    (** [terminate state] finalizes the encoder. *)
+    val terminate : state -> string
+  end
+
+
+  module type Decoder = sig
+      
+    type state
+
+    (** Initial state *)
+    val init : state
+
+    (** [decode state text] decodes [string] under the [state].  It
+        returns a new state and a decoded text.  Replacement chacarter
+        \0xfffd is used for the string which cannot be decoded. *)
+    val decode : state * string -> state * text
+
+    val terminate : state -> string
+
+  end
+
+
+  type t = {name : string; 
+            encoder : module Encoder;
+            decoder : module Decoder}
+
+  type enc = t
+
+  (** [register f] registers [f] as a search method of [enc].  [f]
+      takes an encoding name as an argument, then returns [enc]. *)
+  val register : (string -> enc) -> unit
+
+  (** [of_name name] tries to find the encoding whose name is [name].*)
+  val of_name : string -> enc option
+
+  (** [pipe_encode ~slack ~replace enc] creates a pipe which encodes
+      Unicode text into strings.  [slack] is a number of bytes the
+      pipe can retain, and [replace] is called when [uchar] cannot
+      encodes by [enc] and returns substitution characters. *)
+  val pipe_encode : 
+    ?slack:int -> 
+    ?replace:(uchar -> string) ->
+    enc ->  
+    string Pipe.Reader.t * text Pipe.Writer.t
+      
+  (** [pipe_decode slack replace*)
+  val pipe_decode : 
+    ?slack:int ->
+    enc ->
+    text Pipe.Reader.t * string Pipe.Writer.t
+end
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
