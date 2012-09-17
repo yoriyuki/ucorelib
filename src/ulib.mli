@@ -71,6 +71,10 @@ module UChar : sig
     a value < 0 if [u1] has a smaller Unicode code number than [u2]. *)
   val compare : t -> t -> int
       
+  (** [escape u] returns the notation for code points defined in
+      Unicode Standard.*)
+  val escape : t -> string
+
 (** Aliases of [type t] *)
   type uchar = t
 	
@@ -681,9 +685,12 @@ module CharEncoding : sig
     val init : state
 
     (** [encode state text] tries to encode [text] under the [state].
-        It returns the new state, encoding result, and the last
-        position of the text where the encoding is successful. *)
-    val encode : state * text -> state * string * cursor
+        It returns the new state, encoding result if there is no
+        error.  If [uchar] causes an error, [encode] returns the
+        [state] and encoded [string] before [uchar], and remaining text. *)
+    val encode : state * text -> 
+      ['Success of state * string | 
+        'Error  of state * string * uchar * text]
     
     (** [terminate state] finalizes the encoder. *)
     val terminate : state -> string
@@ -706,35 +713,67 @@ module CharEncoding : sig
 
   end
 
-
+  (** Type of encoding *)
   type t = {name : string; 
             encoder : module Encoder;
             decoder : module Decoder}
 
+  (** aliase *)
   type enc = t
+
+  (** ascii *)
+  val ascii : enc
 
   (** [register f] registers [f] as a search method of [enc].  [f]
       takes an encoding name as an argument, then returns [enc]. *)
-  val register : (string -> enc) -> unit
+  val register : (string -> enc option) -> unit
 
   (** [of_name name] tries to find the encoding whose name is [name].*)
   val of_name : string -> enc option
 
-  (** [pipe_encode ~slack ~replace enc] creates a pipe which encodes
-      Unicode text into strings.  [slack] is a number of bytes the
-      pipe can retain, and [replace] is called when [uchar] cannot
-      encodes by [enc] and returns substitution characters. *)
-  val pipe_encode : 
-    ?slack:int -> 
-    ?replace:(uchar -> string) ->
-    enc ->  
-    string Pipe.Reader.t * text Pipe.Writer.t
-      
-  (** [pipe_decode slack replace*)
-  val pipe_decode : 
-    ?slack:int ->
-    enc ->
-    text Pipe.Reader.t * string Pipe.Writer.t
+  (** Universal encoder type *)
+  type encoder
+
+  (** [create_encoder ~repl enc] creates a new encoder of encoding [enc]
+      using [repl] to escape [uchar].  If [repl] is not supplied,
+      [fun u -> Text.of_latin1 (UChar.escape u)] is used.*)
+  val create_encoder : ?repl : (uchar -> text) -> enc -> encoder
+
+  (** [fun u -> Text.of_latin1 (UChar.escape u)] *)
+  val repl_std : uchar -> text
+(*  (** Escape as defined as XML *)
+  val repl_xml : uchar -> text
+*)
+  (** [encode encoder text] tries to encode [text] using the [encoder].
+      If [text] contains a Unicode character which cannot be encoded,
+      encoder first tries to replace it by [repl].  If this still
+      fails, it reports error and terminates.  *)
+  val encode : encoder * text -> ['Success of encoder * string | 'Error ] 
+
+  (** A trailing part of an encoded string. *)
+  val terminate_encoder : encoder -> string
+
+  (** Encode a text. *)
+  val encode_text : ?repl : (uchar -> text) -> enc -> text -> string
+
+  (** Universal decoder type *)
+  type decoder
+
+  (** [create_decoder enc] creates a new encoder of encoding [enc].*)
+  val create_decoder : enc -> decoder
+
+  (** [encode encoder text] tries to encode [text] using the
+      [encoder].  If it encounters characters which cannot be
+      decoded, it replaces shortest such characters to 0xfffd and
+      resume decoding after the such sequence. *)
+  val decode: decoder * string -> decoder * text
+
+  (** A trailing part of a decoded text. *)
+  val terminate_decoder : decoder -> text
+
+  (** Decode a string *)
+  val decode_string : enc -> string -> text
+
 end
 
 
