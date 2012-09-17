@@ -103,6 +103,14 @@ module UChar = struct
 	
   let int_of u = code u
   let of_int n = chr n
+
+  let escape u = 
+    let n = UChar.code u in
+    if u <= 0xffff then 
+      Printf.sprintf "\\u%04x"
+    else
+      Printf.sprintf "\\U%08x"
+
 end
 
 type uchar = UChar.t
@@ -1277,142 +1285,88 @@ let of_list l =
 
   let of_latin1 s = of_ustring (UTF8.of_latin1 s)
 
-
   (* =end *)
 end
 
+(** Aliase for Text.t *)
 type text = Text.t
+type cursor = int
 
-module type MonadType = sig
-  type 'a m
-    (** The type of a monad producing values of type ['a].*)
+  module type Encoder = sig
+    (** internal state of an encoder *) 
+    type state
 
-  val bind : 'a m -> ('a -> 'b m) -> 'b m
-    (** Monadic binding.
+    (** Initial state *)    
+    val init : state
 
-	[bind m f] executes first [m] then [f], using the
-	result of [m]. *)
-
-  val (>>=) : 'a m -> ('a -> 'b m) -> 'b m
-
-  val (>>) : 'a m -> 'b m -> 'b m
-
-  val return: 'a -> 'a m
-    (**Return a value, that is, put a value in the monad.*)
-end
+    (** [encode state text] tries to encode [text] under the [state].
+        It returns the new state, encoding result, and the last
+        position of the text where the encoding is successful. *)
+    val encode : state * text -> state * string * cursor
+    
+    (** [terminate state] finalizes the encoder. *)
+    val terminate : state -> string
+  end
 
 
-module type ByteInputMonadType = sig
-  include MonadType
-  type state
+  module type Decoder = sig
+      
+    type state
 
-  val get_char : char m
-  val get_string : int -> string m
-  val eval : state -> 'a m -> 'a 
-end
+    (** Initial state *)
+    val init : state
 
-module ByteInputChannelMonad = struct
-  type state = in_channel
+    (** [decode state text] decodes [string] under the [state].  It
+        returns a new state and a decoded text.  Replacement chacarter
+        \0xfffd is used for the string which cannot be decoded. *)
+    val decode : state * string -> state * text
 
-  type 'a m = state -> 'a * state
+    val terminate : state -> string
 
-  let bind a b = 
-    fun st ->
-      let (v, st') = a st in
-      b v st'
+  end
 
-  let (>>=) = bind
 
-  let (>>) a b = bind a (fun _ -> b)
+  type t = {name : string; 
+            encoder : module Encoder;
+            decoder : module Decoder}
 
-  let return v = fun st -> (v, st)
+  type enc = t
 
-  let eval st f = fst (f st)
+  let enc_search_funcs (string -> enc option) : list = ref []
 
-  let get_char inchan = (input_char inchan, inchan)
+  let register f = 
+    enc_search_funcs := f :: enc_search_funcs
 
-  let get_string len inchan =
-    let len = if len <= 0 then 
-      in_channel_length inchan 
-    else 
-      len in
-    let buf = String.create len in
-    let len = input inchan buf 0 len in
-    if len = 0 then raise End_of_file else
-    (String.sub buf 0 len, inchan)
+  let of_name name =
+    let call ret f =
+      match ref with
+        None -> f name
+      | Some enc as x -> x in
+    List.fold_left call None enc_search_funcs
 
-  let init_state st = st
-end
+  let pipe_encode ?(slack = 0) ?(replace = UChar.escape) enc =
+    let module Encoder = val enc in
+    let r, w = Pipe.create () in
+    let f state q = 
 
- module ByteStringMonad = struct
-  type state = {buf : string; pos : int}
+  (** [pipe_encode ~slack ~replace enc] creates a pipe which encodes
+      Unicode texts into strings.  [slack] is a number of bytes the
+      pipe can retain, and [replace] is called when [uchar] cannot
+      encodes by [enc] and returns substitution characters. *)
+  val pipe_encode : 
+    ?slack:int -> 
+    ?replace:(uchar -> string) ->
+    enc ->  
+    string Pipe.Reader.t * text Pipe.Writer.t
+      
+  (** [pipe_decode ~slack enc] creates a pipe which encodes
+      strings into texts.  [slack] is a number of Unicode characters the
+      pipe can retain. *)
+  val pipe_decode : 
+    ?slack:int ->
+    enc ->
+    text Pipe.Reader.t * string Pipe.Writer.t
 
-  type 'a m = state -> 'a * state
 
-  let get_char st =
-    if st.pos >= String.length st.buf then
-      raise End_of_file 
-    else
-      (st.buf.[st.pos],
-       {buf = st.buf; pos = st.pos + 1})
 
-  let get_string len st =
-    if st.pos >= String.length st.buf then raise End_of_file else
-    let len = if len <= 0 then 
-      String.length st.buf - st.pos 
-    else 
-      len in
-    let s = 
-      if st.pos = 0 && len >= String.length st.buf then 
-	st.buf
-      else
-	String.sub st.buf st.pos len in
-    (s, {buf = st.buf; pos = st.pos + len})
 
-  let bind a b = 
-    fun st ->
-      let (v, st') = a st in
-      b v st'
-
-  let (>>=) = bind
-
-  let (>>) a b = bind a (fun _ -> b)
-
-  let return v = fun st -> (v, st)
-
-  let eval st f = fst (f st)
-
-  let init_state s = {buf = s; pos = 0}
-end
-
-module type ByteOutputMonadType = sig
-  include MonadType
-
-  val putc : char -> unit m
-  val puts : string -> unit m
-  val flush : unit -> unit m
-  val close_out : unit -> unit m
-end
-
-module type InputMoandType = sig
-  include MonadType
-
-  val get_uchar : uchar m
-  val get_text : int -> text m
-  val get_line : text m
-end
-
-module ErrorMonad = struct
-  type 'a m = Return of 'a | Error of exn
-
-  let bind v f = 
-    match v with
-      Return v -> f v
-    | (Error exn) as x -> x
-
-  let (>>=) = bind
-
-  let (>>) a b = bind a (fun _ -> b)
-
-  let return v = Return v
-end
