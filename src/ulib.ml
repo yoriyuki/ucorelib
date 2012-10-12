@@ -1292,6 +1292,8 @@ end
 type text = Text.t
 type cursor = int
 
+module CharEncoding  = struct
+
   module type Encoder = sig
     (** internal state of an encoder *) 
     type state
@@ -1332,6 +1334,22 @@ type cursor = int
 
   type enc = t
 
+  module AsciiEnc = struct 
+    type state = unit
+    val init = ()
+
+    val encode () text = 
+      let b = Buffer.create 0 in
+      let f u =
+        let n = UChar.int_of u in
+        if n > 0x7f then 
+
+  end
+
+  module AsciiDec = struct
+
+  end
+
   let enc_search_funcs (string -> enc option) : list = ref []
 
   let register f = 
@@ -1344,28 +1362,15 @@ type cursor = int
       | Some enc as x -> x in
     List.fold_left call None enc_search_funcs
 
-  let pipe_encode ?(slack = 0) ?(replace = UChar.escape) enc =
-    let module Encoder = val enc in
-    let r, w = Pipe.create () in
-    let f state q = 
 
-  (** [pipe_encode ~slack ~replace enc] creates a pipe which encodes
-      Unicode texts into strings.  [slack] is a number of bytes the
-      pipe can retain, and [replace] is called when [uchar] cannot
-      encodes by [enc] and returns substitution characters. *)
-  val pipe_encode : 
-    ?slack:int -> 
-    ?replace:(uchar -> string) ->
-    enc ->  
-    string Pipe.Reader.t * text Pipe.Writer.t
-      
-  (** [pipe_decode ~slack enc] creates a pipe which encodes
-      strings into texts.  [slack] is a number of Unicode characters the
-      pipe can retain. *)
-  val pipe_decode : 
-    ?slack:int ->
-    enc ->
-    text Pipe.Reader.t * string Pipe.Writer.t
+
+end
+
+
+
+
+
+
 
 
 
