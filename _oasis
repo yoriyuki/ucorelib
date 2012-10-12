@@ -10,17 +10,12 @@ BuildTools: ocamlbuild
 Library ulib
   Path:       src
   Modules:    Ulib
-  BuildDepends:  core, async
-  ByteOpt: -thread
-  NativeOpt: -thread
 
 Executable test
   Install: false
   Path: test
   MainIs: test.ml
   BuildDepends: oUnit
-  ByteOpt: -thread
-  NativeOpt: -thread
 
 Test test
   Command: $test
