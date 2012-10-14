@@ -1,29 +1,28 @@
-OASISFormat: 0.2
-Name:        ulib
+OASISFormat: 0.3
+Name:        ucorelib
 Version:     0.0.1
-Synopsis:    A feather weight Unicode library for OCaml
+Synopsis:    A light weight Unicode library for OCaml
 Authors:     Yoriyuki Yamagata
 License:     LGPL-3.0 with OCaml linking exception
-Plugins:     DevFiles (0.2), META (0.2), StdFiles (0.2)
-BuildTools: ocamlbuild
+Plugins:     META (0.3), DevFiles (0.3), StdFiles (0.3)
 
-Library ulib
+Library ucorelib
   Path:       src
-  Modules:    Ulib
-
+  BuildTools: ocamlbuild
+  Modules:    UCoreLib
+  Build: true
+  Install: true
+     
 Executable test
+  BuildTools: ocamlbuild
   Install: false
   Path: test
   MainIs: test.ml
-  BuildDepends: oUnit
-
+  BuildDepends: oUnit, ucorelib
+  
 Test test
   Command: $test
   
-Document ulib
-  Title: API reference for ulib
-  Type: ocamlbuild
-  InstallDir: $htmldir/ulib
-  BuildTools+: ocamldoc
-  XOCamlbuildPath: .
-  XOCamlbuildLibraries: ulib
+Document ucorelib
+  Title:      API reference for ucorelib
+  InstallDir: $docdir
