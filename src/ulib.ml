@@ -105,11 +105,11 @@ module UChar = struct
   let of_int n = chr n
 
   let escape u = 
-    let n = UChar.code u in
+    let n = code u in
     if u <= 0xffff then 
-      Printf.sprintf "\\u%04x"
+      Printf.sprintf "\\u%04x" n
     else
-      Printf.sprintf "\\U%08x"
+      Printf.sprintf "\\U%08x" n
 
 end
 
@@ -1295,75 +1295,176 @@ type cursor = int
 module CharEncoding  = struct
 
   module type Encoder = sig
-    (** internal state of an encoder *) 
     type state
-
-    (** Initial state *)    
     val init : state
-
-    (** [encode state text] tries to encode [text] under the [state].
-        It returns the new state, encoding result, and the last
-        position of the text where the encoding is successful. *)
-    val encode : state * text -> state * string * cursor
-    
-    (** [terminate state] finalizes the encoder. *)
+    val encode : ?repl:(uchar -> text) -> state -> text ->
+      [`Success of state * string | `Error ]
     val terminate : state -> string
   end
 
-
-  module type Decoder = sig
-      
+  module type Decoder = sig      
     type state
-
-    (** Initial state *)
     val init : state
-
-    (** [decode state text] decodes [string] under the [state].  It
-        returns a new state and a decoded text.  Replacement chacarter
-        \0xfffd is used for the string which cannot be decoded. *)
-    val decode : state * string -> state * text
-
-    val terminate : state -> string
-
+    val decode : state -> string -> state * text
+    val terminate : state -> text
   end
-
 
   type t = {name : string; 
-            encoder : module Encoder;
-            decoder : module Decoder}
+            encoder : (module Encoder);
+            decoder : (module Decoder)}
 
   type enc = t
 
   module AsciiEnc = struct 
     type state = unit
-    val init = ()
+    let init = ()
 
-    val encode () text = 
+    let rec encode ?repl () text =
       let b = Buffer.create 0 in
-      let f u =
+      let conv u =
         let n = UChar.int_of u in
-        if n > 0x7f then 
-
+        if n < 0x80 then
+          Buffer.add_char b (Char.chr n)
+        else begin
+          match repl with
+              Some repl -> 
+                (match encode () (repl u) with
+                    `Success ((), subst) ->
+                      Buffer.add_string b subst
+                  | `Error -> raise Out_of_range)
+          | None -> raise Out_of_range
+        end in
+      try 
+        `Success ((), (Text.iter conv text; Buffer.contents b))
+      with 
+          Out_of_range -> `Error
+      
+    let terminate () = ""
   end
 
   module AsciiDec = struct
 
+    type state = unit
+
+    let init = ()
+
+    let decode () s =
+      let conv i =
+        if Char.code s.[i] < 0x80 then UChar.of_char s.[i] else
+        UChar.of_int 0xfffd in
+      (), Text.init (String.length s) conv 
+
+    let terminate () = Text.empty 
   end
 
-  let enc_search_funcs (string -> enc option) : list = ref []
+  let ascii = {name = "US-ASCII"; 
+               encoder = (module AsciiEnc);
+               decoder = (module AsciiDec)}
+
+  let enc_search_funcs : (string -> enc option) list ref = ref []
 
   let register f = 
-    enc_search_funcs := f :: enc_search_funcs
+    enc_search_funcs := f :: !enc_search_funcs
+
+  let builtin name =
+    match name with
+      "US-ASCII" | "USASCII" | "ASCII" | "ISO646US" | "CP367" | "ANSI_X3.4-1968"
+    | "IANA/csASCII" | "IANA/cp367" | "IANA/IBM367" | "IANA/us" | "ANSI_X3.4-1968"
+    | "IANA/US-ASCII" | "IANA/ISO646-US" | "IANA/ASCII" | "IANA/ISO_646.irv:1991"
+    | "IANA/ANSI_X3.4-1986" | "IANA/iso-ir-6" | "IANA/ANSI_X3.4-1968" ->
+        Some ascii
+    | _ -> None
 
   let of_name name =
     let call ret f =
-      match ref with
+      match ret with
         None -> f name
       | Some enc as x -> x in
-    List.fold_left call None enc_search_funcs
+    List.fold_left call None !enc_search_funcs
 
+  module type UnivEncoder = sig
+    module Encode : Encoder
+    type state = Encode.state
+    val current_state : state
+    val encode : state -> text -> [`Success of state * string | `Error ] 
+    val terminate : state -> string
+  end
 
+  type encoder = (module UnivEncoder) 
 
+  let create_encoder ?repl enc : (module UnivEncoder) = 
+    (module struct 
+      module Encode = (val enc.encoder)
+      type state =  Encode.state
+      let current_state = Encode.init
+      let encode = Encode.encode ?repl
+      let terminate = Encode.terminate
+    end)
+
+  let repl_escape u = Text.of_latin1 (UChar.escape u)
+
+  let encode (encoder : (module UnivEncoder)) text =
+    let module E = (val encoder) in
+    match E.encode E.current_state text with
+      `Success (state, string) ->
+        let encoder : (module UnivEncoder) = (module struct
+          module Encoder = E
+          include E
+          let current_state = state
+        end) in
+        `Success (encoder, string)
+    | `Error -> `Error
+
+  let terminate_encoder (encoder : (module UnivEncoder)) =
+    let module E = (val encoder) in
+    E.terminate E.current_state
+
+  let encode_text ?repl enc text =
+    let module E = (val enc.encoder) in
+    match E.encode ?repl E.init text with
+      `Error -> `Error
+    | `Success (state, string) ->
+        `Success (string ^ (E.terminate state))
+
+  module type UnivDecoder = sig
+    module Decode : Decoder
+    val current_state : Decode.state
+    val decode : Decode.state -> string -> Decode.state * text
+    val terminate : Decode.state -> text
+  end
+
+  type decoder = (module UnivDecoder) 
+
+  let create_decoder enc : (module UnivDecoder) = 
+    (module struct 
+      module Decode = (val enc.decoder)
+      include Decode
+      let current_state = Decode.init
+    end)
+
+  let decode (decoder : (module UnivDecoder))  s =
+    let module D = (val decoder) in
+    let state, text = D.decode D.current_state s in
+    let module D' = struct
+      module Decode = D.Decode
+      include Decode
+      let current_state = state
+    end in
+    let state : (module UnivDecoder) = (module D') in
+    (state, text)
+
+  let terminate_decoder (decoder : (module UnivDecoder)) =
+    let module D = (val decoder) in
+    D.terminate D.current_state
+
+  let decode_string enc s =
+    let module D = (val enc.decoder) in
+    let state, text = D.decode D.init s in 
+    Text.append text (D.terminate state)
+
+  let recode ?repl enc1 s1 enc2 = 
+    let text = decode_string enc1 s1 in
+    encode_text ?repl enc2 text
 end
 
 

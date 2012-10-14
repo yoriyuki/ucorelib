@@ -684,14 +684,15 @@ module CharEncoding : sig
     (** Initial state *)    
     val init : state
 
-    (** [encode state text] tries to encode [text] under the [state].
-        It returns the new state, encoding result if there is no
-        error.  If [uchar] causes an error, [encode] returns the
-        [state] and encoded [string] before [uchar], and remaining text. *)
-    val encode : state * text -> 
-      ['Success of state * string | 
-        'Error  of state * string * uchar * text]
-    
+    (** [encode ~repl state text] tries to encode [text].  If [text]
+        contains a Unicode character which cannot be encoded, first
+        tries to replace it by [repl].  If this still fails, it reports
+        error and terminates. If [repl] is not supplied, [encode]
+        fails at the first ocation of a Unicode character which
+        cannot be encoded.*)
+    val encode : ?repl:(uchar -> text) -> state -> text ->
+      [`Success of state * string | `Error ]
+      
     (** [terminate state] finalizes the encoder. *)
     val terminate : state -> string
   end
@@ -707,16 +708,16 @@ module CharEncoding : sig
     (** [decode state text] decodes [string] under the [state].  It
         returns a new state and a decoded text.  Replacement chacarter
         \0xfffd is used for the string which cannot be decoded. *)
-    val decode : state * string -> state * text
+    val decode : state -> string -> state * text
 
-    val terminate : state -> string
+    val terminate : state -> text
 
   end
 
   (** Type of encoding *)
   type t = {name : string; 
-            encoder : module Encoder;
-            decoder : module Decoder}
+            encoder : (module Encoder);
+            decoder : (module Decoder)}
 
   (** aliase *)
   type enc = t
@@ -736,25 +737,26 @@ module CharEncoding : sig
 
   (** [create_encoder ~repl enc] creates a new encoder of encoding [enc]
       using [repl] to escape [uchar].  If [repl] is not supplied,
-      [fun u -> Text.of_latin1 (UChar.escape u)] is used.*)
+      escaping is not done and an error is reported. *)
   val create_encoder : ?repl : (uchar -> text) -> enc -> encoder
 
   (** [fun u -> Text.of_latin1 (UChar.escape u)] *)
-  val repl_std : uchar -> text
+  val repl_escape : uchar -> text
 (*  (** Escape as defined as XML *)
   val repl_xml : uchar -> text
 *)
-  (** [encode encoder text] tries to encode [text] using the [encoder].
+  (** [encode ~repl encoder text] tries to encode [text] using the [encoder].
       If [text] contains a Unicode character which cannot be encoded,
       encoder first tries to replace it by [repl].  If this still
       fails, it reports error and terminates.  *)
-  val encode : encoder * text -> ['Success of encoder * string | 'Error ] 
+  val encode : encoder -> text -> [`Success of encoder * string | `Error ] 
 
   (** A trailing part of an encoded string. *)
   val terminate_encoder : encoder -> string
 
   (** Encode a text. *)
-  val encode_text : ?repl : (uchar -> text) -> enc -> text -> string
+  val encode_text : ?repl : (uchar -> text) -> enc -> text -> 
+    [ `Success of string | `Error ]
 
   (** Universal decoder type *)
   type decoder
@@ -766,7 +768,7 @@ module CharEncoding : sig
       [encoder].  If it encounters characters which cannot be
       decoded, it replaces shortest such characters to 0xfffd and
       resume decoding after the such sequence. *)
-  val decode: decoder * string -> decoder * text
+  val decode: decoder -> string -> decoder * text
 
   (** A trailing part of a decoded text. *)
   val terminate_decoder : decoder -> text
@@ -774,6 +776,9 @@ module CharEncoding : sig
   (** Decode a string *)
   val decode_string : enc -> string -> text
 
+  (** Code conversion *)
+  val recode : ?repl : (uchar -> text) -> enc -> string -> enc ->
+    [ `Success of string | `Error ]
 end
 
 
