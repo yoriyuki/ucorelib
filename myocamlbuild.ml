@@ -1,5 +1,5 @@
 (* OASIS_START *)
-(* DO NOT EDIT (digest: 9a3acd297d713f1ac907aab2b1505f51) *)
+(* DO NOT EDIT (digest: e5928dcc62f074265ff7122bf7fc49e4) *)
 module OASISGettext = struct
 # 21 "/Users/yoriyuki/Factory/ocaml-4.00.1/oasis-0.3.0/src/oasis/OASISGettext.ml"
 
@@ -479,39 +479,13 @@ let package_default =
   {
      MyOCamlbuildBase.lib_ocaml = [("ulib", ["src"])];
      lib_c = [];
-     flags =
-       [
-          (["oasis_library_ulib_byte"; "ocaml"; "link"; "byte"],
-            [(OASISExpr.EBool true, S [A "-thread"])]);
-          (["oasis_library_ulib_native"; "ocaml"; "link"; "native"],
-            [(OASISExpr.EBool true, S [A "-thread"])]);
-          (["oasis_library_ulib_byte"; "ocaml"; "ocamldep"; "byte"],
-            [(OASISExpr.EBool true, S [A "-thread"])]);
-          (["oasis_library_ulib_native"; "ocaml"; "ocamldep"; "native"],
-            [(OASISExpr.EBool true, S [A "-thread"])]);
-          (["oasis_library_ulib_byte"; "ocaml"; "compile"; "byte"],
-            [(OASISExpr.EBool true, S [A "-thread"])]);
-          (["oasis_library_ulib_native"; "ocaml"; "compile"; "native"],
-            [(OASISExpr.EBool true, S [A "-thread"])]);
-          (["oasis_executable_test_byte"; "ocaml"; "link"; "byte"],
-            [(OASISExpr.EBool true, S [A "-thread"])]);
-          (["oasis_executable_test_native"; "ocaml"; "link"; "native"],
-            [(OASISExpr.EBool true, S [A "-thread"])]);
-          (["oasis_executable_test_byte"; "ocaml"; "ocamldep"; "byte"],
-            [(OASISExpr.EBool true, S [A "-thread"])]);
-          (["oasis_executable_test_native"; "ocaml"; "ocamldep"; "native"],
-            [(OASISExpr.EBool true, S [A "-thread"])]);
-          (["oasis_executable_test_byte"; "ocaml"; "compile"; "byte"],
-            [(OASISExpr.EBool true, S [A "-thread"])]);
-          (["oasis_executable_test_native"; "ocaml"; "compile"; "native"],
-            [(OASISExpr.EBool true, S [A "-thread"])])
-       ];
+     flags = [];
      includes = [];
      }
   ;;
 
 let dispatch_default = MyOCamlbuildBase.dispatch_default package_default;;
 
-# 516 "myocamlbuild.ml"
+# 490 "myocamlbuild.ml"
 (* OASIS_STOP *)
 Ocamlbuild_plugin.dispatch dispatch_default;;
