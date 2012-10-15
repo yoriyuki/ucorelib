@@ -722,8 +722,9 @@ module CharEncoding : sig
   (** aliase *)
   type enc = t
 
-  (** ascii *)
+  (** Builtin encodings *)
   val ascii : enc
+  val latin1 : enc
 
   (** [register f] registers [f] as a search method of [enc].  [f]
       takes an encoding name as an argument, then returns [enc]. *)
@@ -780,22 +781,3 @@ module CharEncoding : sig
   val recode : ?repl : (uchar -> text) -> enc -> string -> enc ->
     [ `Success of string | `Error ]
 end
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

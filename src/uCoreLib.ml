@@ -1361,6 +1361,50 @@ module CharEncoding  = struct
                encoder = (module AsciiEnc);
                decoder = (module AsciiDec)}
 
+  module Latin1Enc = struct 
+    type state = unit
+    let init = ()
+
+    let rec encode ?repl () text =
+      let b = Buffer.create 0 in
+      let conv u =
+        let n = UChar.int_of u in
+        if n < 0x100 then
+          Buffer.add_char b (Char.chr n)
+        else begin
+          match repl with
+              Some repl -> 
+                (match encode () (repl u) with
+                    `Success ((), subst) ->
+                      Buffer.add_string b subst
+                  | `Error -> raise Out_of_range)
+          | None -> raise Out_of_range
+        end in
+      try 
+        `Success ((), (Text.iter conv text; Buffer.contents b))
+      with 
+          Out_of_range -> `Error
+      
+    let terminate () = ""
+  end
+
+  module Latin1Dec = struct
+
+    type state = unit
+
+    let init = ()
+
+    let decode () s =
+      let conv i = UChar.of_char s.[i] in
+      (), Text.init (String.length s) conv 
+
+    let terminate () = Text.empty 
+  end
+
+  let latin1 = {name = "Latin-1"; 
+               encoder = (module Latin1Enc);
+               decoder = (module Latin1Dec)}
+
   let enc_search_funcs : (string -> enc option) list ref = ref []
 
   let register f = 
@@ -1368,12 +1412,18 @@ module CharEncoding  = struct
 
   let builtin name =
     match name with
-      "US-ASCII" | "USASCII" | "ASCII" | "ISO646US" | "CP367" | "ANSI_X3.4-1968"
-    | "IANA/csASCII" | "IANA/cp367" | "IANA/IBM367" | "IANA/us" | "ANSI_X3.4-1968"
+      "US-ASCII" | "USASCII" | "ASCII" | "ISO646US" | "CP367" | "ANSI_X3.4-1968" 
+    | "IANA/csASCII" | "IANA/cp367" | "IANA/IBM367" | "IANA/us"
     | "IANA/US-ASCII" | "IANA/ISO646-US" | "IANA/ASCII" | "IANA/ISO_646.irv:1991"
     | "IANA/ANSI_X3.4-1986" | "IANA/iso-ir-6" | "IANA/ANSI_X3.4-1968" ->
         Some ascii
+    | "ISO-8859-1" | "IANA/csISOLatin1" | "IANA/CP819" | "IANA/IBM819"
+    | "IANA/l1" | "IANA/latin1" | "IANA/ISO-8859-1" | "IANA/ISO_8859-1"
+    | "IANA/iso-ir-100" | "IANA/ISO_8859-1:1987" ->
+        Some latin1
     | _ -> None
+
+  let () =  register builtin
 
   let of_name name =
     let call ret f =
