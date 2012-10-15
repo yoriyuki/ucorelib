@@ -1,6 +1,6 @@
 (* OASIS_START *)
-(* DO NOT EDIT (digest: e950f6b88b53f54dfc1126a2b6c246f9) *)
-This is the INSTALL file for the ulib distribution.
+(* DO NOT EDIT (digest: d8647aab35472aa99dc849c8470fd60c) *)
+This is the INSTALL file for the ucorelib distribution.
 
 This package uses OASIS to generate its build system. See section OASIS for
 full information. 
@@ -9,7 +9,7 @@ Dependencies
 ============
 
 In order to compile this package, you will need:
-* ocaml for all, test test, doc ulib
+* ocaml
 * findlib
 * oUnit for executable test
 

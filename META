@@ -1,9 +1,0 @@
-# OASIS_START
-# DO NOT EDIT (digest: deb61bd2f4070c8f2a4cbf9e9fd95f2a)
-version = "0.0.1"
-description = "A feather weight Unicode library for OCaml"
-archive(byte) = "ulib.cma"
-archive(native) = "ulib.cmxa"
-exists_if = "ulib.cma"
-# OASIS_STOP
-

@@ -1,8 +1,8 @@
 (* OASIS_START *)
-(* DO NOT EDIT (digest: 74f9915bbb566481a874c0ccb64ba832) *)
-This is the README file for the ulib distribution.
+(* DO NOT EDIT (digest: d2d6c6ee7a29897d1ffb899906c3f679) *)
+This is the README file for the ucorelib distribution.
 
-A feather weight Unicode library for OCaml
+A light weight Unicode library for OCaml
 
 See the files INSTALL.txt for building and installation instructions. 
 
