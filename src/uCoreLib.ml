@@ -88,7 +88,7 @@ module UChar = struct
   let of_char = Char.code
       
 (* valid range: U+0000..U+D7FF and U+E000..U+10FFFF *)
-  let chr n = 
+  let chr n =
     if (n >= 0 && n <= 0xd7ff) or (n >= 0xe000 && n <= 0x10ffff) 
     then n 
     else raise Out_of_range
@@ -1405,6 +1405,121 @@ module CharEncoding  = struct
                encoder = (module Latin1Enc);
                decoder = (module Latin1Dec)}
 
+
+  module UTF8Enc = struct
+    type state = unit
+
+    let init = ()
+
+    (* TODO: We need to check noncharacters.*) 
+    let encode ?repl () t =
+      let s = Text.to_string t in
+      `Success ((), s)
+
+    let terminate () = ""
+  end
+
+  module UTF8Dec = struct 
+    type state = [ `Start 
+                 | `Second of int 
+                 | `Trail of int * int]
+
+    let init = `Start
+
+    let subst_char = UChar.chr 0xfffd
+
+    (* TODO: We need filter noncharacters. *)
+    let rec decode_start s i text = 
+      if i >= String.length s then (`Start, text) else
+      let n = Char.code s.[i] in
+      if n < 0x80 then 
+        decode_start s (i+1) (Text.append_char (UChar.chr n) text)
+      else if n >= 0xc2 && n <= 0xf4 then
+        decode_second n s (i+1) text
+      else
+        decode_start s (i+1) (Text.append_char subst_char text) 
+    
+    and decode_second a s i text =
+      if i >= String.length s then (`Second a,  text) else
+      let n = Char.code s.[i] in
+      (* 2-bytes code *)
+      if a >= 0xc2 && a <= 0xdf then
+        if (n >= 0x80 && n <= 0xbf) then
+          let n = (a - 0xc0) lsl 6 lor (0x7f land n) in
+          decode_start s (i+1) (Text.append_char (UChar.chr n) text)
+        else
+          decode_start s i (Text.append_char subst_char text)
+      (* 3-bytes code *)
+      else if (a >= 0xe1 && a <= 0xec) || a = 0xee || a = 0xef then
+        if (n >= 0x80 && n <= 0xbf) then
+          let a = (a - 0xe0) lsl 6 lor (0x7f land n) in
+          decode_trail 1 a s (i+1) text
+        else
+          decode_start s i   (Text.append_char subst_char text)
+      else if a = 0xe0 then
+        if n >= 0xa0 && n <= 0xbf then
+          let a = 0x7f land n in
+          decode_trail 1 a s (i+1) text
+        else
+          decode_start s i (Text.append_char subst_char text)
+      else if a = 0xed then 
+        if n >= 0x80 && n <= 0x9f then
+          let a = (a - 0xe0) lsl 6 lor (0x7f land n) in
+          decode_trail 1 a s (i+1) text
+        else
+          decode_start s i (Text.append_char subst_char text)
+      (* 4-bytes code *) 
+      else if a = 0xf0 then
+        if n >= 0x90 && n <= 0xbf then
+          let a = (a - 0xf0) lsl 6 lor (0x7f land n) in
+          decode_trail 2 a s (i+1) text
+        else
+          decode_start s i (Text.append_char subst_char text)
+      else if a >= 0xf1 && a <= 0xf3 then
+        if n >= 0x80 && n <= 0xbf then
+          let a = (a - 0xf0) lsl 6 lor (0x7f land n) in
+          decode_trail 2 a s (i+1) text
+        else
+          decode_start s i (Text.append_char subst_char text)
+      else if a = 0xf4 then
+        if n >= 0x80 && n <= 0x8f then
+          let a = (a - 0xf0) lsl 6 lor (0x7f land n) in
+          decode_trail 2 a s (i+1) text
+        else
+          decode_start s i (Text.append_char subst_char text)
+      else      
+          decode_start s i (Text.append_char subst_char text)
+
+    and decode_trail count a s i text =
+          if i >= String.length s then (`Trail (count, a),  text) else  (* FIX ME *)
+          let n = Char.code s.[i] in
+          if n >= 0x80 && n <= 0xbf then
+          let a = a lsl 6 lor (0x7f land n) in
+            if count = 1 then
+              decode_start s (i+1) (Text.append_char (UChar.chr a) text)
+            else if count = 2 then
+              decode_trail 1 a s (i+1) text
+            else
+              assert false
+          else
+            decode_start s i (Text.append_char subst_char text)
+
+    let decode st s =
+      match st with
+        `Start -> decode_start s 0 Text.empty
+      | `Second a -> decode_second a s 0 Text.empty
+      | `Trail (c, a) -> decode_trail c a s 0 Text.empty
+
+    let terminate = function
+    | `Start -> Text.empty
+    | _ -> Text.of_uchar subst_char
+
+  end
+
+  let utf8 = {name = "UTF-8"; 
+               encoder = (module UTF8Enc);
+               decoder = (module UTF8Dec)}
+
   let enc_search_funcs : (string -> enc option) list ref = ref []
 
   let register f = 
@@ -1421,6 +1536,7 @@ module CharEncoding  = struct
     | "IANA/l1" | "IANA/latin1" | "IANA/ISO-8859-1" | "IANA/ISO_8859-1"
     | "IANA/iso-ir-100" | "IANA/ISO_8859-1:1987" ->
         Some latin1
+    | "UTF-8" | "IANA/UTF-8" -> Some utf8
     | _ -> None
 
   let () =  register builtin
@@ -1516,13 +1632,3 @@ module CharEncoding  = struct
     let text = decode_string enc1 s1 in
     encode_text ?repl enc2 text
 end
-
-
-
-
-
-
-
-
-
-

@@ -725,6 +725,7 @@ module CharEncoding : sig
   (** Builtin encodings *)
   val ascii : enc
   val latin1 : enc
+  val utf8: enc
 
   (** [register f] registers [f] as a search method of [enc].  [f]
       takes an encoding name as an argument, then returns [enc]. *)
