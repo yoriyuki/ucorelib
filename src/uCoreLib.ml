@@ -1584,7 +1584,7 @@ module CharEncoding  = struct
 	    let n = (n lsl 8) lor (Char.code c) in
 	    let n1 = 0x10000 + (n0 - 0xD800) lsl 10 lor (n - 0xDC00) in
 	    `Success, Text.append_char (UChar.of_int n1) text in
-      fold_string conv (`Success, Text.empty) s
+      fold_string conv (state, Text.empty) s
 
     let terminate = function
 	`Success -> Text.empty
@@ -1692,8 +1692,8 @@ module CharEncoding  = struct
       include Decode
       let current_state = state
     end in
-    let state : (module UnivDecoder) = (module D') in
-    (state, text)
+    let state' : (module UnivDecoder) = (module D') in
+    (state', text)
 
   let terminate_decoder (decoder : (module UnivDecoder)) =
     let module D = (val decoder) in
