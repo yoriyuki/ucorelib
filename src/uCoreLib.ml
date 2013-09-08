@@ -434,7 +434,6 @@ end
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *)
 
-
 module Text = struct 
   
   (**Low-level optimization*)
@@ -690,10 +689,12 @@ module Text = struct
           | None ->
               None
           | Some(leaf, rest) ->
-              iter.leaf <- leaf;
-              iter.idx <- UTF8.ByteIndex.next leaf UTF8.ByteIndex.first;
-              iter.rest <- rest;
-              Some(UTF8.ByteIndex.look leaf UTF8.ByteIndex.first)
+	      if leaf = "" then None else begin
+		iter.leaf <- leaf;
+		iter.idx <- UTF8.ByteIndex.next leaf UTF8.ByteIndex.first;
+		iter.rest <- rest;
+		Some(UTF8.ByteIndex.look leaf UTF8.ByteIndex.first)
+	      end
       else begin
         (* Just advance in the current leaf: *)
         let ch = UTF8.ByteIndex.look iter.leaf iter.idx in
