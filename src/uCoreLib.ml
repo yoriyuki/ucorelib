@@ -1294,6 +1294,8 @@ type cursor = int
 
 module CharEncoding  = struct
 
+  let subst_char = UChar.chr 0xfffd
+
   module type Encoder = sig
     type state
     val init : state
@@ -1426,8 +1428,6 @@ module CharEncoding  = struct
 
     let init = `Start
 
-    let subst_char = UChar.chr 0xfffd
-
     (* TODO: We need filter noncharacters. *)
     let rec decode_start s i text = 
       if i >= String.length s then (`Start, text) else
@@ -1520,6 +1520,80 @@ module CharEncoding  = struct
                encoder = (module UTF8Enc);
                decoder = (module UTF8Dec)}
 
+  module UTF16BEEnc = struct 
+    type state = unit
+    let init = ()
+
+    let rec encode ?repl () text =
+      let b = Buffer.create 0 in
+      let conv u =
+        let n = UChar.int_of u in
+        if n < 0x10000 then begin
+          Buffer.add_char b (Char.chr (n lsr 8));
+	  Buffer.add_char b (Char.chr (n land 0xff));
+        end else begin
+	  let n1 = 0xD800 + (n - 0x10000) lsr 10 in
+	  let n2 = 0xDC00 + (n - 0x10000) land 0x03FF in
+          Buffer.add_char b (Char.chr (n1 lsr 8));
+	  Buffer.add_char b (Char.chr (n1 land 0xff));
+          Buffer.add_char b (Char.chr (n2 lsr 8));
+	  Buffer.add_char b (Char.chr (n2 land 0xff));
+	end in
+      `Success ((), (Text.iter conv text; Buffer.contents b))
+      
+    let terminate () = ""
+  end
+
+  module UTF16BEDec = struct
+
+    type state = 
+	[ `Success
+      | `Byte of char
+      | `Surrogate of int
+      | `Surrogate_with_Byte of int * char]
+	  
+    let init = `Success
+
+    let fold_string f a s =
+      let ret = ref a in
+      let f' c =
+	ret := f !ret c in 
+      String.iter f' s; !ret
+
+    let decode state s =
+      let conv (state, text) c =
+	match state with
+	  `Success -> `Byte c, text
+	| `Byte c0 ->
+	    let n = Char.code c0 in
+	    let n = (n lsl 8) lor (Char.code c) in
+	    if n >= 0xD800 && n <= 0xDBFF then
+	      `Surrogate n, text
+	    else if n >= 0xDC00 && n <= 0xDFFF then
+	      `Byte c, Text.append_char subst_char text
+	    else
+	      `Success, Text.append_char (UChar.of_int n) text 
+	| `Surrogate n -> 
+	    if Char.code c < 0xDC or Char.code c > 0xdf then
+	      `Byte c, Text.append_char subst_char text 
+	    else
+	      `Surrogate_with_Byte (n, c), text
+	| `Surrogate_with_Byte (n0, c0) ->
+	    let n = Char.code c0 in
+	    let n = (n lsl 8) lor (Char.code c) in
+	    let n1 = 0x10000 + (n0 - 0xD800) lsl 10 lor (n - 0xDC00) in
+	    `Success, Text.append_char (UChar.of_int n1) text in
+      fold_string conv (`Success, Text.empty) s
+
+    let terminate = function
+	`Success -> Text.empty
+      | _ -> Text.of_uchar subst_char
+  end
+
+  let utf16be = {name = "UTF-16BE"; 
+               encoder = (module UTF16BEEnc);
+               decoder = (module UTF16BEDec)}
+
   let enc_search_funcs : (string -> enc option) list ref = ref []
 
   let register f = 
@@ -1537,6 +1611,7 @@ module CharEncoding  = struct
     | "IANA/iso-ir-100" | "IANA/ISO_8859-1:1987" ->
         Some latin1
     | "UTF-8" | "IANA/UTF-8" -> Some utf8
+    | "UTF-16BE" | "IANA/UTF-16BE" -> Some utf16be
     | _ -> None
 
   let () =  register builtin
