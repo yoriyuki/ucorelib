@@ -1297,6 +1297,12 @@ module CharEncoding  = struct
 
   let subst_char = UChar.chr 0xfffd
 
+  let fold_string f a s =
+    let ret = ref a in
+    let f' c =
+      ret := f !ret c in 
+    String.iter f' s; !ret
+      
   module type Encoder = sig
     type state
     val init : state
@@ -1640,12 +1646,6 @@ module CharEncoding  = struct
 	  
     let init = `Success
 
-    let fold_string f a s =
-      let ret = ref a in
-      let f' c =
-	ret := f !ret c in 
-      String.iter f' s; !ret
-
     let decode state s =
       let conv (state, text) c =
 	match state with
@@ -1755,6 +1755,80 @@ module CharEncoding  = struct
                encoder = (module UTF16LEEnc);
                decoder = (module UTF16LEDec)}
 
+  module UTF16Enc = struct
+    type state = [`Init | `After of UTF16BEEnc.state]
+
+    let init = `Init
+
+    let encode ?repl state text =
+      let s0, state = 
+	match state with
+	  `Init -> "\xFE\xFF", UTF16BEEnc.init
+	| `After state -> "", state in
+      match UTF16BEEnc.encode ?repl state text with
+	`Success (state, s1) -> `Success (`After state, s0 ^ s1)
+      | `Error -> `Error
+
+    let terminate = function
+	`Init -> ""
+      | `After state -> UTF16BEEnc.terminate state
+  end
+
+  module UTF16Dec = struct
+    type state = 
+	[`Init | `Byte of char | `BE of UTF16BEDec.state | `LE of UTF16LEDec.state]
+
+    let init = `Init
+
+    let decode state s =
+      match state with
+	`Init ->      
+	  if String.length s = 0 then `Init, Text.empty else
+	  if String.length s = 1 then `Byte s.[0], Text.empty else
+	  if s.[0] = '\xfe' && s.[1] = '\xff' then
+	    let s' = String.sub s 2 (String.length s - 2) in
+	    let state, text = UTF16BEDec.decode UTF16BEDec.init s' in
+	    `BE state, text
+	  else if s.[0] = '\xff' && s.[1] = '\xfe' then
+	    let s' = String.sub s 2 (String.length s - 2) in
+	    let state, text = UTF16LEDec.decode UTF16LEDec.init s' in
+	    `LE state, text
+	  else
+	    let state, text = UTF16BEDec.decode UTF16BEDec.init s in
+	    `BE state, text
+      | `Byte c0 ->
+	  if String.length s = 0 then `Byte c0, Text.empty else
+	  if c0 = '\xfe' && s.[0] = '\xff' then
+	    let s' = String.sub s 1 (String.length s - 1) in
+	    let state, text = UTF16BEDec.decode UTF16BEDec.init s' in
+	    `BE state, text
+	  else if c0 = '\xff' && s.[0] = '\xfe' then
+	    let s' = String.sub s 1 (String.length s - 1) in
+	    let state, text = UTF16LEDec.decode UTF16LEDec.init s' in
+	    `LE state, text
+	  else
+	    let s' = (String.make 1 c0) ^ s in
+	    let state, text = UTF16BEDec.decode UTF16BEDec.init s' in
+	    `BE state, text
+      | `BE state ->
+	  let state, text = UTF16BEDec.decode state s in
+	  `BE state, text
+      | `LE state ->
+	  let state, text = UTF16LEDec.decode state s in
+	  `LE state, text
+
+    let terminate = function
+	`Init -> Text.empty
+      | `Byte c -> Text.of_uchar subst_char
+      | `BE state -> UTF16BEDec.terminate state
+      | `LE state -> UTF16LEDec.terminate state
+  end
+
+  let utf16 = {name = "UTF-16"; 
+               encoder = (module UTF16Enc);
+               decoder = (module UTF16Dec)}
+
+  (* Encoding management *)
 
   let enc_search_funcs : (string -> enc option) list ref = ref []
 
@@ -1775,6 +1849,7 @@ module CharEncoding  = struct
     | "UTF-8" | "IANA/UTF-8" -> Some utf8
     | "UTF-16BE" | "IANA/UTF-16BE" -> Some utf16be
     | "UTF-16LE" | "IANA/UTF-16LE" -> Some utf16le
+    | "UTF-16" | "IANA/UTF-16" -> Some utf16
     | _ -> None
 
   let () =  register builtin
