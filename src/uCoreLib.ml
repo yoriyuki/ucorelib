@@ -88,7 +88,7 @@ module UChar = struct
   let of_char = Char.code
       
 (* valid range: U+0000..U+D7FF and U+E000..U+10FFFF *)
-  let chr n = 
+  let chr n =
     if (n >= 0 && n <= 0xd7ff) or (n >= 0xe000 && n <= 0x10ffff) 
     then n 
     else raise Out_of_range
@@ -103,6 +103,14 @@ module UChar = struct
 	
   let int_of u = code u
   let of_int n = chr n
+
+  let escape u = 
+    let n = code u in
+    if u <= 0xffff then 
+      Printf.sprintf "\\u%04x" n
+    else
+      Printf.sprintf "\\U%08x" n
+
 end
 
 type uchar = UChar.t
@@ -426,7 +434,6 @@ end
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *)
 
-
 module Text = struct 
   
   (**Low-level optimization*)
@@ -682,10 +689,12 @@ module Text = struct
           | None ->
               None
           | Some(leaf, rest) ->
-              iter.leaf <- leaf;
-              iter.idx <- UTF8.ByteIndex.next leaf UTF8.ByteIndex.first;
-              iter.rest <- rest;
-              Some(UTF8.ByteIndex.look leaf UTF8.ByteIndex.first)
+	      if leaf = "" then None else begin
+		iter.leaf <- leaf;
+		iter.idx <- UTF8.ByteIndex.next leaf UTF8.ByteIndex.first;
+		iter.rest <- rest;
+		Some(UTF8.ByteIndex.look leaf UTF8.ByteIndex.first)
+	      end
       else begin
         (* Just advance in the current leaf: *)
         let ch = UTF8.ByteIndex.look iter.leaf iter.idx in
@@ -1277,142 +1286,743 @@ let of_list l =
 
   let of_latin1 s = of_ustring (UTF8.of_latin1 s)
 
-
   (* =end *)
 end
 
+(** Aliase for Text.t *)
 type text = Text.t
+type cursor = int
 
-module type MonadType = sig
-  type 'a m
-    (** The type of a monad producing values of type ['a].*)
+module CharEncoding  = struct
 
-  val bind : 'a m -> ('a -> 'b m) -> 'b m
-    (** Monadic binding.
+  let subst_char = UChar.chr 0xfffd
 
-	[bind m f] executes first [m] then [f], using the
-	result of [m]. *)
+  let fold_string f a s =
+    let ret = ref a in
+    let f' c =
+      ret := f !ret c in 
+    String.iter f' s; !ret
+      
+  module type Encoder = sig
+    type state
+    val init : state
+    val encode : ?repl:(uchar -> text) -> state -> text ->
+      [`Success of state * string | `Error ]
+    val terminate : state -> string
+  end
 
-  val (>>=) : 'a m -> ('a -> 'b m) -> 'b m
+  module type Decoder = sig      
+    type state
+    val init : state
+    val decode : state -> string -> state * text
+    val terminate : state -> text
+  end
 
-  val (>>) : 'a m -> 'b m -> 'b m
+  type t = {name : string; 
+            encoder : (module Encoder);
+            decoder : (module Decoder)}
 
-  val return: 'a -> 'a m
-    (**Return a value, that is, put a value in the monad.*)
-end
+  type enc = t
+
+  module type UnivEncoder = sig
+    module Encode : Encoder
+    type state = Encode.state
+    val current_state : state
+    val encode : state -> text -> [`Success of state * string | `Error ] 
+    val terminate : state -> string
+  end
+
+  type encoder = (module UnivEncoder) 
+
+  let create_encoder ?repl enc : (module UnivEncoder) = 
+    (module struct 
+      module Encode = (val enc.encoder)
+      type state =  Encode.state
+      let current_state = Encode.init
+      let encode = Encode.encode ?repl
+      let terminate = Encode.terminate
+    end)
+
+  let repl_escape u = Text.of_latin1 (UChar.escape u)
+
+  let encode (encoder : (module UnivEncoder)) text =
+    let module E = (val encoder) in
+    match E.encode E.current_state text with
+      `Success (state, string) ->
+        let encoder : (module UnivEncoder) = (module struct
+          module Encoder = E
+          include E
+          let current_state = state
+        end) in
+        `Success (encoder, string)
+    | `Error -> `Error
+
+  let terminate_encoder (encoder : (module UnivEncoder)) =
+    let module E = (val encoder) in
+    E.terminate E.current_state
+
+  let encode_text ?repl enc text =
+    let module E = (val enc.encoder) in
+    match E.encode ?repl E.init text with
+      `Error -> `Error
+    | `Success (state, string) ->
+        `Success (string ^ (E.terminate state))
+
+  module type UnivDecoder = sig
+    module Decode : Decoder
+    val current_state : Decode.state
+    val decode : Decode.state -> string -> Decode.state * text
+    val terminate : Decode.state -> text
+  end
+
+  type decoder = (module UnivDecoder) 
+
+  let create_decoder enc : (module UnivDecoder) = 
+    (module struct 
+      module Decode = (val enc.decoder)
+      include Decode
+      let current_state = Decode.init
+    end)
+
+  let decode (decoder : (module UnivDecoder))  s =
+    let module D = (val decoder) in
+    let state, text = D.decode D.current_state s in
+    let module D' = struct
+      module Decode = D.Decode
+      include Decode
+      let current_state = state
+    end in
+    let state' : (module UnivDecoder) = (module D') in
+    (state', text)
+
+  let terminate_decoder (decoder : (module UnivDecoder)) =
+    let module D = (val decoder) in
+    D.terminate D.current_state
+
+  let decode_string enc s =
+    let module D = (val enc.decoder) in
+    let state, text = D.decode D.init s in 
+    Text.append text (D.terminate state)
+
+  let recode ?repl enc1 s1 enc2 = 
+    let text = decode_string enc1 s1 in
+    encode_text ?repl enc2 text
+
+ (* Individual encodings *)
+  module AsciiEnc = struct 
+    type state = unit
+    let init = ()
+
+    let rec encode ?repl () text =
+      let b = Buffer.create 0 in
+      let conv u =
+        let n = UChar.int_of u in
+        if n < 0x80 then
+          Buffer.add_char b (Char.chr n)
+        else begin
+          match repl with
+              Some repl -> 
+                (match encode () (repl u) with
+                    `Success ((), subst) ->
+                      Buffer.add_string b subst
+                  | `Error -> raise Out_of_range)
+          | None -> raise Out_of_range
+        end in
+      try 
+        `Success ((), (Text.iter conv text; Buffer.contents b))
+      with 
+          Out_of_range -> `Error
+      
+    let terminate () = ""
+  end
+
+  module AsciiDec = struct
+
+    type state = unit
+
+    let init = ()
+
+    let decode () s =
+      let conv i =
+        if Char.code s.[i] < 0x80 then UChar.of_char s.[i] else
+        UChar.of_int 0xfffd in
+      (), Text.init (String.length s) conv 
+
+    let terminate () = Text.empty 
+  end
+
+  let ascii = {name = "US-ASCII"; 
+               encoder = (module AsciiEnc);
+               decoder = (module AsciiDec)}
+
+  module Latin1Enc = struct 
+    type state = unit
+    let init = ()
+
+    let rec encode ?repl () text =
+      let b = Buffer.create 0 in
+      let conv u =
+        let n = UChar.int_of u in
+        if n < 0x100 then
+          Buffer.add_char b (Char.chr n)
+        else begin
+          match repl with
+              Some repl -> 
+                (match encode () (repl u) with
+                    `Success ((), subst) ->
+                      Buffer.add_string b subst
+                  | `Error -> raise Out_of_range)
+          | None -> raise Out_of_range
+        end in
+      try 
+        `Success ((), (Text.iter conv text; Buffer.contents b))
+      with 
+          Out_of_range -> `Error
+      
+    let terminate () = ""
+  end
+
+  module Latin1Dec = struct
+
+    type state = unit
+
+    let init = ()
+
+    let decode () s =
+      let conv i = UChar.of_char s.[i] in
+      (), Text.init (String.length s) conv 
+
+    let terminate () = Text.empty 
+  end
+
+  let latin1 = {name = "Latin-1"; 
+               encoder = (module Latin1Enc);
+               decoder = (module Latin1Dec)}
 
 
-module type ByteInputMonadType = sig
-  include MonadType
-  type state
+  module UTF8Enc = struct
+    type state = unit
 
-  val get_char : char m
-  val get_string : int -> string m
-  val eval : state -> 'a m -> 'a 
-end
+    let init = ()
 
-module ByteInputChannelMonad = struct
-  type state = in_channel
+    (* TODO: We need to check noncharacters.*) 
+    let encode ?repl () t =
+      let s = Text.to_string t in
+      `Success ((), s)
 
-  type 'a m = state -> 'a * state
+    let terminate () = ""
+  end
 
-  let bind a b = 
-    fun st ->
-      let (v, st') = a st in
-      b v st'
+  module UTF8Dec = struct 
+    type state = [ `Start 
+                 | `Second of int 
+                 | `Trail of int * int]
 
-  let (>>=) = bind
+    let init = `Start
 
-  let (>>) a b = bind a (fun _ -> b)
-
-  let return v = fun st -> (v, st)
-
-  let eval st f = fst (f st)
-
-  let get_char inchan = (input_char inchan, inchan)
-
-  let get_string len inchan =
-    let len = if len <= 0 then 
-      in_channel_length inchan 
-    else 
-      len in
-    let buf = String.create len in
-    let len = input inchan buf 0 len in
-    if len = 0 then raise End_of_file else
-    (String.sub buf 0 len, inchan)
-
-  let init_state st = st
-end
-
- module ByteStringMonad = struct
-  type state = {buf : string; pos : int}
-
-  type 'a m = state -> 'a * state
-
-  let get_char st =
-    if st.pos >= String.length st.buf then
-      raise End_of_file 
-    else
-      (st.buf.[st.pos],
-       {buf = st.buf; pos = st.pos + 1})
-
-  let get_string len st =
-    if st.pos >= String.length st.buf then raise End_of_file else
-    let len = if len <= 0 then 
-      String.length st.buf - st.pos 
-    else 
-      len in
-    let s = 
-      if st.pos = 0 && len >= String.length st.buf then 
-	st.buf
+    (* TODO: We need filter noncharacters. *)
+    let rec decode_start s i text = 
+      if i >= String.length s then (`Start, text) else
+      let n = Char.code s.[i] in
+      if n < 0x80 then 
+        decode_start s (i+1) (Text.append_char (UChar.chr n) text)
+      else if n >= 0xc2 && n <= 0xf4 then
+        decode_second n s (i+1) text
       else
-	String.sub st.buf st.pos len in
-    (s, {buf = st.buf; pos = st.pos + len})
+        decode_start s (i+1) (Text.append_char subst_char text) 
+    
+    and decode_second a s i text =
+      if i >= String.length s then (`Second a,  text) else
+      let n = Char.code s.[i] in
+      (* 2-bytes code *)
+      if a >= 0xc2 && a <= 0xdf then
+        if (n >= 0x80 && n <= 0xbf) then
+          let n = (a - 0xc0) lsl 6 lor (0x7f land n) in
+          decode_start s (i+1) (Text.append_char (UChar.chr n) text)
+        else
+          decode_start s i (Text.append_char subst_char text)
+      (* 3-bytes code *)
+      else if (a >= 0xe1 && a <= 0xec) || a = 0xee || a = 0xef then
+        if (n >= 0x80 && n <= 0xbf) then
+          let a = (a - 0xe0) lsl 6 lor (0x7f land n) in
+          decode_trail 1 a s (i+1) text
+        else
+          decode_start s i   (Text.append_char subst_char text)
+      else if a = 0xe0 then
+        if n >= 0xa0 && n <= 0xbf then
+          let a = 0x7f land n in
+          decode_trail 1 a s (i+1) text
+        else
+          decode_start s i (Text.append_char subst_char text)
+      else if a = 0xed then 
+        if n >= 0x80 && n <= 0x9f then
+          let a = (a - 0xe0) lsl 6 lor (0x7f land n) in
+          decode_trail 1 a s (i+1) text
+        else
+          decode_start s i (Text.append_char subst_char text)
+      (* 4-bytes code *) 
+      else if a = 0xf0 then
+        if n >= 0x90 && n <= 0xbf then
+          let a = (a - 0xf0) lsl 6 lor (0x7f land n) in
+          decode_trail 2 a s (i+1) text
+        else
+          decode_start s i (Text.append_char subst_char text)
+      else if a >= 0xf1 && a <= 0xf3 then
+        if n >= 0x80 && n <= 0xbf then
+          let a = (a - 0xf0) lsl 6 lor (0x7f land n) in
+          decode_trail 2 a s (i+1) text
+        else
+          decode_start s i (Text.append_char subst_char text)
+      else if a = 0xf4 then
+        if n >= 0x80 && n <= 0x8f then
+          let a = (a - 0xf0) lsl 6 lor (0x7f land n) in
+          decode_trail 2 a s (i+1) text
+        else
+          decode_start s i (Text.append_char subst_char text)
+      else      
+          decode_start s i (Text.append_char subst_char text)
 
-  let bind a b = 
-    fun st ->
-      let (v, st') = a st in
-      b v st'
+    and decode_trail count a s i text =
+          if i >= String.length s then (`Trail (count, a),  text) else  (* FIX ME *)
+          let n = Char.code s.[i] in
+          if n >= 0x80 && n <= 0xbf then
+          let a = a lsl 6 lor (0x7f land n) in
+            if count = 1 then
+              decode_start s (i+1) (Text.append_char (UChar.chr a) text)
+            else if count = 2 then
+              decode_trail 1 a s (i+1) text
+            else
+              assert false
+          else
+            decode_start s i (Text.append_char subst_char text)
 
-  let (>>=) = bind
+    let decode st s =
+      match st with
+        `Start -> decode_start s 0 Text.empty
+      | `Second a -> decode_second a s 0 Text.empty
+      | `Trail (c, a) -> decode_trail c a s 0 Text.empty
 
-  let (>>) a b = bind a (fun _ -> b)
+    let terminate = function
+    | `Start -> Text.empty
+    | _ -> Text.of_uchar subst_char
 
-  let return v = fun st -> (v, st)
+  end
 
-  let eval st f = fst (f st)
+  let utf8 = {name = "UTF-8"; 
+               encoder = (module UTF8Enc);
+               decoder = (module UTF8Dec)}
 
-  let init_state s = {buf = s; pos = 0}
-end
+  module UTF16BEEnc = struct 
+    type state = unit
+    let init = ()
 
-module type ByteOutputMonadType = sig
-  include MonadType
+    let rec encode ?repl () text =
+      let b = Buffer.create 0 in
+      let conv u =
+        let n = UChar.int_of u in
+        if n < 0x10000 then begin
+          Buffer.add_char b (Char.chr (n lsr 8));
+	  Buffer.add_char b (Char.chr (n land 0xff));
+        end else begin
+	  let n1 = 0xD800 + (n - 0x10000) lsr 10 in
+	  let n2 = 0xDC00 + (n - 0x10000) land 0x03FF in
+          Buffer.add_char b (Char.chr (n1 lsr 8));
+	  Buffer.add_char b (Char.chr (n1 land 0xff));
+          Buffer.add_char b (Char.chr (n2 lsr 8));
+	  Buffer.add_char b (Char.chr (n2 land 0xff));
+	end in
+      `Success ((), (Text.iter conv text; Buffer.contents b))
+      
+    let terminate () = ""
+  end
 
-  val putc : char -> unit m
-  val puts : string -> unit m
-  val flush : unit -> unit m
-  val close_out : unit -> unit m
-end
+  module UTF16BEDec = struct
 
-module type InputMoandType = sig
-  include MonadType
+    type state = 
+	[ `Success
+      | `Byte of char
+      | `Surrogate of int
+      | `Surrogate_with_Byte of int * char]
+	  
+    let init = `Success
 
-  val get_uchar : uchar m
-  val get_text : int -> text m
-  val get_line : text m
-end
+    let decode state s =
+      let conv (state, text) c =
+	match state with
+	  `Success -> `Byte c, text
+	| `Byte c0 ->
+	    let n = Char.code c0 in
+	    let n = (n lsl 8) lor (Char.code c) in
+	    if n >= 0xD800 && n <= 0xDBFF then
+	      `Surrogate n, text
+	    else if n >= 0xDC00 && n <= 0xDFFF then
+	      `Byte c, Text.append_char subst_char text
+	    else
+	      `Success, Text.append_char (UChar.of_int n) text 
+	| `Surrogate n -> 
+	    if Char.code c < 0xDC or Char.code c > 0xdf then
+	      `Byte c, Text.append_char subst_char text 
+	    else
+	      `Surrogate_with_Byte (n, c), text
+	| `Surrogate_with_Byte (n0, c0) ->
+	    let n = Char.code c0 in
+	    let n = (n lsl 8) lor (Char.code c) in
+	    let n1 = 0x10000 + (n0 - 0xD800) lsl 10 lor (n - 0xDC00) in
+	    `Success, Text.append_char (UChar.of_int n1) text in
+      fold_string conv (state, Text.empty) s
 
-module ErrorMonad = struct
-  type 'a m = Return of 'a | Error of exn
+    let terminate = function
+	`Success -> Text.empty
+      | _ -> Text.of_uchar subst_char
+  end
 
-  let bind v f = 
-    match v with
-      Return v -> f v
-    | (Error exn) as x -> x
+  let utf16be = {name = "UTF-16BE"; 
+               encoder = (module UTF16BEEnc);
+               decoder = (module UTF16BEDec)}
 
-  let (>>=) = bind
+  module UTF16LEEnc = struct 
+    type state = unit
+    let init = ()
 
-  let (>>) a b = bind a (fun _ -> b)
+    let rec encode ?repl () text =
+      let b = Buffer.create 0 in
+      let conv u =
+        let n = UChar.int_of u in
+        if n < 0x10000 then begin
+	  Buffer.add_char b (Char.chr (n land 0xff));
+          Buffer.add_char b (Char.chr (n lsr 8));
+        end else begin
+	  let n1 = 0xD800 + (n - 0x10000) lsr 10 in
+	  let n2 = 0xDC00 + (n - 0x10000) land 0x03FF in
+	  Buffer.add_char b (Char.chr (n1 land 0xff));
+          Buffer.add_char b (Char.chr (n1 lsr 8));
+	  Buffer.add_char b (Char.chr (n2 land 0xff));
+          Buffer.add_char b (Char.chr (n2 lsr 8));
+	end in
+      `Success ((), (Text.iter conv text; Buffer.contents b))
+      
+    let terminate () = ""
+  end
 
-  let return v = Return v
+  module UTF16LEDec = struct
+
+    type state = 
+	[ `Success
+      | `Byte of char
+      | `Surrogate of int
+      | `Surrogate_with_Byte of int * char]
+	  
+    let init = `Success
+
+    let fold_string f a s =
+      let ret = ref a in
+      let f' c =
+	ret := f !ret c in 
+      String.iter f' s; !ret
+
+    let decode state s =
+      let conv (state, text) c =
+	match state with
+	  `Success -> `Byte c, text
+	| `Byte c0 ->
+	    let n = Char.code c in
+	    let n = (n lsl 8) lor (Char.code c0) in
+	    if n >= 0xD800 && n <= 0xDBFF then
+	      `Surrogate n, text
+	    else if n >= 0xDC00 && n <= 0xDFFF then
+	      `Byte c, Text.append_char subst_char text
+	    else
+	      `Success, Text.append_char (UChar.of_int n) text 
+	| `Surrogate n -> 
+	      `Surrogate_with_Byte (n, c), text
+	| `Surrogate_with_Byte (n0, c0) ->
+	    let n = Char.code c in
+	    let n = (n lsl 8) lor (Char.code c0) in
+	    if n >= 0xDC00 && n <= 0xDFFF then
+	      let n1 = 0x10000 + (n0 - 0xD800) lsl 10 lor (n - 0xDC00) in
+	      `Success, Text.append_char (UChar.of_int n1) text
+	    else
+	      `Byte c, Text.append_char subst_char text
+      in
+      fold_string conv (state, Text.empty) s
+
+    let terminate = function
+	`Success -> Text.empty
+      | _ -> Text.of_uchar subst_char
+  end
+
+  let utf16le = {name = "UTF-16LE"; 
+               encoder = (module UTF16LEEnc);
+               decoder = (module UTF16LEDec)}
+
+  module UTF16Enc = struct
+    type state = [`Init | `After of UTF16BEEnc.state]
+
+    let init = `Init
+
+    let encode ?repl state text =
+      let s0, state = 
+	match state with
+	  `Init -> "\xFE\xFF", UTF16BEEnc.init
+	| `After state -> "", state in
+      match UTF16BEEnc.encode ?repl state text with
+	`Success (state, s1) -> `Success (`After state, s0 ^ s1)
+      | `Error -> `Error
+
+    let terminate = function
+	`Init -> ""
+      | `After state -> UTF16BEEnc.terminate state
+  end
+
+  module UTF16Dec = struct
+    type state = 
+	[`Init | `Byte of char | `BE of UTF16BEDec.state | `LE of UTF16LEDec.state]
+
+    let init = `Init
+
+    let decode state s =
+      match state with
+	`Init ->      
+	  if String.length s = 0 then `Init, Text.empty else
+	  if String.length s = 1 then `Byte s.[0], Text.empty else
+	  if s.[0] = '\xfe' && s.[1] = '\xff' then
+	    let s' = String.sub s 2 (String.length s - 2) in
+	    let state, text = UTF16BEDec.decode UTF16BEDec.init s' in
+	    `BE state, text
+	  else if s.[0] = '\xff' && s.[1] = '\xfe' then
+	    let s' = String.sub s 2 (String.length s - 2) in
+	    let state, text = UTF16LEDec.decode UTF16LEDec.init s' in
+	    `LE state, text
+	  else
+	    let state, text = UTF16BEDec.decode UTF16BEDec.init s in
+	    `BE state, text
+      | `Byte c0 ->
+	  if String.length s = 0 then `Byte c0, Text.empty else
+	  if c0 = '\xfe' && s.[0] = '\xff' then
+	    let s' = String.sub s 1 (String.length s - 1) in
+	    let state, text = UTF16BEDec.decode UTF16BEDec.init s' in
+	    `BE state, text
+	  else if c0 = '\xff' && s.[0] = '\xfe' then
+	    let s' = String.sub s 1 (String.length s - 1) in
+	    let state, text = UTF16LEDec.decode UTF16LEDec.init s' in
+	    `LE state, text
+	  else
+	    let s' = (String.make 1 c0) ^ s in
+	    let state, text = UTF16BEDec.decode UTF16BEDec.init s' in
+	    `BE state, text
+      | `BE state ->
+	  let state, text = UTF16BEDec.decode state s in
+	  `BE state, text
+      | `LE state ->
+	  let state, text = UTF16LEDec.decode state s in
+	  `LE state, text
+
+    let terminate = function
+	`Init -> Text.empty
+      | `Byte c -> Text.of_uchar subst_char
+      | `BE state -> UTF16BEDec.terminate state
+      | `LE state -> UTF16LEDec.terminate state
+  end
+
+  let utf16 = {name = "UTF-16"; 
+               encoder = (module UTF16Enc);
+               decoder = (module UTF16Dec)}
+
+  module UTF32BEEnc = struct 
+    type state = unit
+    let init = ()
+
+    let rec encode ?repl () text =
+      let b = Buffer.create 0 in
+      let conv u =
+        let n = UChar.int_of u in
+	Buffer.add_char b (Char.chr (n lsr 24));
+	Buffer.add_char b (Char.chr ((n lsr 16) land 0xff));
+	Buffer.add_char b (Char.chr ((n lsr 8) land 0xff));
+	Buffer.add_char b (Char.chr (n land 0xff)) in
+      `Success ((), (Text.iter conv text; Buffer.contents b))
+      
+    let terminate () = ""
+  end
+
+  module UTF32BEDec = struct
+
+    type state = int * int
+	  
+    let init = (0, 0)
+
+    let decode state s =
+      let conv ((n, i), text) c =
+	if i = 0 then
+	  if Char.code c > 0 then
+	    (0, 0), Text.append_char subst_char text
+	  else
+	    (0, 1), text
+	else if i = 1 then
+	  if Char.code c > 0x10 then
+	    (0, 0), Text.append_char subst_char (Text.append_char subst_char text)
+	  else
+	    (Char.code c, 2), text
+	else if i = 2 then
+	  (n lsl 8 lor (Char.code c), 3), text
+	else if i = 3 then
+	  let n = n lsl 8 lor (Char.code c) in
+	  (0, 0), Text.append_char (UChar.of_int n) text
+	else assert false in
+      fold_string conv (state, Text.empty) s
+
+    let terminate = function
+	(0, 0) -> Text.empty
+      | _ -> Text.of_uchar subst_char
+  end
+
+  let utf32be = {name = "UTF-32BE"; 
+               encoder = (module UTF32BEEnc);
+               decoder = (module UTF32BEDec)}
+
+  module UTF32LEEnc = struct 
+    type state = unit
+    let init = ()
+
+    let rec encode ?repl () text =
+      let b = Buffer.create 0 in
+      let conv u =
+        let n = UChar.int_of u in
+	Buffer.add_char b (Char.chr (n land 0xff));
+	Buffer.add_char b (Char.chr ((n lsr 8) land 0xff));
+	Buffer.add_char b (Char.chr ((n lsr 16) land 0xff));
+	Buffer.add_char b (Char.chr (n lsr 24)) in
+      `Success ((), (Text.iter conv text; Buffer.contents b))
+      
+    let terminate () = ""
+  end
+
+  module UTF32LEDec = struct
+
+    type state = int * int
+	  
+    let init = (0, 0)
+
+    let decode state s =
+      let conv ((n, i), text) c =
+	if i = 0 then
+	  (Char.code c, 1), text
+	else if i = 1 then
+	  (n lor (Char.code c lsl 8), 2), text
+	else if i = 2 then
+	  if Char.code c > 0x10 then
+	    (Char.code c, 1), Text.append_char subst_char text
+	  else
+	    (n lor (Char.code c lsl 16), 3), text
+	else if i = 3 then
+	  if Char.code c > 0 then
+	    (Char.code c, 1), Text.append_char subst_char text
+	  else
+	    (0, 0), Text.append_char (UChar.of_int n) text
+	else assert false in
+      fold_string conv (state, Text.empty) s
+
+    let terminate = function
+	(0, 0) -> Text.empty
+      | _ -> Text.of_uchar subst_char
+
+  end
+
+  let utf32le = {name = "UTF-32LE"; 
+               encoder = (module UTF32LEEnc);
+               decoder = (module UTF32LEDec)}
+
+  module UTF32Enc = struct
+    type state = [`Init | `After of UTF32BEEnc.state]
+
+    let init = `Init
+
+    let encode ?repl state text =
+      let s0, state = 
+	match state with
+	  `Init -> "\x00\x00\xFE\xFF", UTF16BEEnc.init
+	| `After state -> "", state in
+      match UTF32BEEnc.encode ?repl state text with
+	`Success (state, s1) -> `Success (`After state, s0 ^ s1)
+      | `Error -> `Error
+
+    let terminate = function
+	`Init -> ""
+      | `After state -> UTF16BEEnc.terminate state
+  end
+
+  module UTF32Dec = struct
+    type state = 
+	[`Bytes of string | `BE of UTF32BEDec.state | `LE of UTF32LEDec.state]
+
+    let init = `Bytes ""
+
+    let decode state s =
+      match state with
+	`Bytes s0 ->
+	  let s = s0 ^ s in
+	  if String.length s < 4 then
+	    `Bytes s, Text.empty
+	  else if String.sub s 0 4 = "\x00\x00\xfe\xff" then
+	    let s = String.sub s 4 (String.length s - 4) in
+	    let state, text = UTF32BEDec.decode UTF32BEDec.init s in
+	    `BE state, text
+	  else if String.sub s 0 4 = "\xff\xfe\x00\x00" then
+	    let s = String.sub s 4 (String.length s - 4) in
+	    let state, text = UTF32LEDec.decode UTF32LEDec.init s in
+	    `LE state, text
+	  else
+	    let state, text = UTF32BEDec.decode UTF32BEDec.init s in
+	    `BE state, text
+      | `BE state ->
+	  let state, text = UTF32BEDec.decode state s in
+	  `BE state, text
+      | `LE state ->
+	  let state, text = UTF32LEDec.decode state s in
+	  `LE state, text
+
+    let terminate = function
+      `Bytes s -> if s = "" then Text.empty else Text.of_uchar subst_char
+      | `BE state -> UTF32BEDec.terminate state
+      | `LE state -> UTF32LEDec.terminate state
+  end
+
+  let utf32 = {name = "UTF-32"; 
+               encoder = (module UTF32Enc);
+               decoder = (module UTF32Dec)}
+  (* Encoding management *)
+
+  let enc_search_funcs : (string -> enc option) list ref = ref []
+
+  let register f = 
+    enc_search_funcs := f :: !enc_search_funcs
+
+  let builtin name =
+    match name with
+      "US-ASCII" | "USASCII" | "ASCII" | "ISO646US" | "CP367" | "ANSI_X3.4-1968" 
+    | "IANA/csASCII" | "IANA/cp367" | "IANA/IBM367" | "IANA/us"
+    | "IANA/US-ASCII" | "IANA/ISO646-US" | "IANA/ASCII" | "IANA/ISO_646.irv:1991"
+    | "IANA/ANSI_X3.4-1986" | "IANA/iso-ir-6" | "IANA/ANSI_X3.4-1968" ->
+        Some ascii
+    | "ISO-8859-1" | "IANA/csISOLatin1" | "IANA/CP819" | "IANA/IBM819"
+    | "IANA/l1" | "IANA/latin1" | "IANA/ISO-8859-1" | "IANA/ISO_8859-1"
+    | "IANA/iso-ir-100" | "IANA/ISO_8859-1:1987" ->
+        Some latin1
+    | "UTF-8" | "IANA/UTF-8" -> Some utf8
+    | "UTF-16BE" | "IANA/UTF-16BE" -> Some utf16be
+    | "UTF-16LE" | "IANA/UTF-16LE" -> Some utf16le
+    | "UTF-16" | "IANA/UTF-16" -> Some utf16
+    | "UTF-32BE" | "IANA/UTF-32BE" -> Some utf32be
+    | "UTF-32LE" | "IANA/UTF-32LE" -> Some utf32le
+    | "UTF-32" | "IANA/UTF-32" -> Some utf32
+    | _ -> None
+
+  let () =  register builtin
+
+  let of_name name =
+    let call ret f =
+      match ret with
+        None -> f name
+      | Some enc as x -> x in
+    List.fold_left call None !enc_search_funcs
 end

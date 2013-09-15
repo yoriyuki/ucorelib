@@ -2,7 +2,9 @@
 .o
 .cm[oxi]
 *~
+#*
 _*//META
+_build/
 /_build/_digests
 /_build/_log
 /_build/myocamlbuild
