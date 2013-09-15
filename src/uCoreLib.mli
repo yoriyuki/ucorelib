@@ -729,6 +729,9 @@ module CharEncoding : sig
   val utf16be : enc
   val utf16le : enc
   val utf16 : enc
+  val utf32be : enc
+  val utf32le : enc
+  val utf32 : enc
 
   (** [register f] registers [f] as a search method of [enc].  [f]
       takes an encoding name as an argument, then returns [enc]. *)

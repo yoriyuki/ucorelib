@@ -1828,6 +1828,168 @@ module CharEncoding  = struct
                encoder = (module UTF16Enc);
                decoder = (module UTF16Dec)}
 
+  module UTF32BEEnc = struct 
+    type state = unit
+    let init = ()
+
+    let rec encode ?repl () text =
+      let b = Buffer.create 0 in
+      let conv u =
+        let n = UChar.int_of u in
+	Buffer.add_char b (Char.chr (n lsr 24));
+	Buffer.add_char b (Char.chr ((n lsr 16) land 0xff));
+	Buffer.add_char b (Char.chr ((n lsr 8) land 0xff));
+	Buffer.add_char b (Char.chr (n land 0xff)) in
+      `Success ((), (Text.iter conv text; Buffer.contents b))
+      
+    let terminate () = ""
+  end
+
+  module UTF32BEDec = struct
+
+    type state = int * int
+	  
+    let init = (0, 0)
+
+    let decode state s =
+      let conv ((n, i), text) c =
+	if i = 0 then
+	  if Char.code c > 0 then
+	    (0, 0), Text.append_char subst_char text
+	  else
+	    (0, 1), text
+	else if i = 1 then
+	  if Char.code c > 0x10 then
+	    (0, 0), Text.append_char subst_char (Text.append_char subst_char text)
+	  else
+	    (Char.code c, 2), text
+	else if i = 2 then
+	  (n lsl 8 lor (Char.code c), 3), text
+	else if i = 3 then
+	  let n = n lsl 8 lor (Char.code c) in
+	  (0, 0), Text.append_char (UChar.of_int n) text
+	else assert false in
+      fold_string conv (state, Text.empty) s
+
+    let terminate = function
+	(0, 0) -> Text.empty
+      | _ -> Text.of_uchar subst_char
+  end
+
+  let utf32be = {name = "UTF-32BE"; 
+               encoder = (module UTF32BEEnc);
+               decoder = (module UTF32BEDec)}
+
+  module UTF32LEEnc = struct 
+    type state = unit
+    let init = ()
+
+    let rec encode ?repl () text =
+      let b = Buffer.create 0 in
+      let conv u =
+        let n = UChar.int_of u in
+	Buffer.add_char b (Char.chr (n land 0xff));
+	Buffer.add_char b (Char.chr ((n lsr 8) land 0xff));
+	Buffer.add_char b (Char.chr ((n lsr 16) land 0xff));
+	Buffer.add_char b (Char.chr (n lsr 24)) in
+      `Success ((), (Text.iter conv text; Buffer.contents b))
+      
+    let terminate () = ""
+  end
+
+  module UTF32LEDec = struct
+
+    type state = int * int
+	  
+    let init = (0, 0)
+
+    let decode state s =
+      let conv ((n, i), text) c =
+	if i = 0 then
+	  (Char.code c, 1), text
+	else if i = 1 then
+	  (n lor (Char.code c lsl 8), 2), text
+	else if i = 2 then
+	  if Char.code c > 0x10 then
+	    (Char.code c, 1), Text.append_char subst_char text
+	  else
+	    (n lor (Char.code c lsl 16), 3), text
+	else if i = 3 then
+	  if Char.code c > 0 then
+	    (Char.code c, 1), Text.append_char subst_char text
+	  else
+	    (0, 0), Text.append_char (UChar.of_int n) text
+	else assert false in
+      fold_string conv (state, Text.empty) s
+
+    let terminate = function
+	(0, 0) -> Text.empty
+      | _ -> Text.of_uchar subst_char
+
+  end
+
+  let utf32le = {name = "UTF-32LE"; 
+               encoder = (module UTF32LEEnc);
+               decoder = (module UTF32LEDec)}
+
+  module UTF32Enc = struct
+    type state = [`Init | `After of UTF32BEEnc.state]
+
+    let init = `Init
+
+    let encode ?repl state text =
+      let s0, state = 
+	match state with
+	  `Init -> "\x00\x00\xFE\xFF", UTF16BEEnc.init
+	| `After state -> "", state in
+      match UTF32BEEnc.encode ?repl state text with
+	`Success (state, s1) -> `Success (`After state, s0 ^ s1)
+      | `Error -> `Error
+
+    let terminate = function
+	`Init -> ""
+      | `After state -> UTF16BEEnc.terminate state
+  end
+
+  module UTF32Dec = struct
+    type state = 
+	[`Bytes of string | `BE of UTF32BEDec.state | `LE of UTF32LEDec.state]
+
+    let init = `Bytes ""
+
+    let decode state s =
+      match state with
+	`Bytes s0 ->
+	  let s = s0 ^ s in
+	  if String.length s < 4 then
+	    `Bytes s, Text.empty
+	  else if String.sub s 0 4 = "\x00\x00\xfe\xff" then
+	    let s = String.sub s 4 (String.length s - 4) in
+	    let state, text = UTF32BEDec.decode UTF32BEDec.init s in
+	    `BE state, text
+	  else if String.sub s 0 4 = "\xff\xfe\x00\x00" then
+	    let s = String.sub s 4 (String.length s - 4) in
+	    let state, text = UTF32LEDec.decode UTF32LEDec.init s in
+	    `LE state, text
+	  else
+	    let state, text = UTF32BEDec.decode UTF32BEDec.init s in
+	    `BE state, text
+      | `BE state ->
+	  let state, text = UTF32BEDec.decode state s in
+	  `BE state, text
+      | `LE state ->
+	  let state, text = UTF32LEDec.decode state s in
+	  `LE state, text
+
+    let terminate = function
+      `Bytes s -> if s = "" then Text.empty else Text.of_uchar subst_char
+      | `BE state -> UTF32BEDec.terminate state
+      | `LE state -> UTF32LEDec.terminate state
+  end
+
+  let utf32 = {name = "UTF-32"; 
+               encoder = (module UTF32Enc);
+               decoder = (module UTF32Dec)}
   (* Encoding management *)
 
   let enc_search_funcs : (string -> enc option) list ref = ref []
@@ -1850,6 +2012,9 @@ module CharEncoding  = struct
     | "UTF-16BE" | "IANA/UTF-16BE" -> Some utf16be
     | "UTF-16LE" | "IANA/UTF-16LE" -> Some utf16le
     | "UTF-16" | "IANA/UTF-16" -> Some utf16
+    | "UTF-32BE" | "IANA/UTF-32BE" -> Some utf32be
+    | "UTF-32LE" | "IANA/UTF-32LE" -> Some utf32le
+    | "UTF-32" | "IANA/UTF-32" -> Some utf32
     | _ -> None
 
   let () =  register builtin
