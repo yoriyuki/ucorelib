@@ -1,6 +1,6 @@
-(** ulib : a feather weight Unicode library for OCaml *)
+(** ucorelib : a feather weight Unicode library for OCaml *)
 
-(* Copyright (C) 2011 Yamagata Yoriyuki. *)
+(* Copyright (C) 2011, 2013 Yamagata Yoriyuki. *)
 
 (* This library is free software; you can redistribute it and/or *)
 (* modify it under the terms of the GNU Lesser General Public License *)
@@ -73,7 +73,7 @@
 
 (* You can contact the authour by sending email to *)
 (* yoriyuki.y@gmail.com *)
-	
+
 exception Out_of_range
 exception Malformed_code
 
@@ -406,6 +406,315 @@ module UTF8 = struct
 
 end
 
+(* Interface to String used for Rope implementation *)
+module type BaseStringType = sig
+  type t
+
+  val empty : t
+  (* [create n] creates [n]-bytes base string *)
+  val create : int -> t
+  val init : int -> (int -> uchar) -> t
+  val of_string : string -> t option
+  val of_string_unsafe : string -> t
+  val of_ascii : string -> t option
+
+  val length : t -> int
+  val compare : t -> t -> int
+
+  type index 
+  val first : t -> index
+  val end_pos : t -> index
+  val out_of_range : t -> index -> bool
+  val next : t -> index -> index
+  val move : t -> index -> int -> index
+  val equal_index : t -> index -> index -> bool
+
+  (* Low level functions *)
+  (* bytes of substring *)
+  val size : t -> index -> index -> int
+  (* [blit s1 i1 i2 s2 j] copies the contents of [s1] from [i1] to
+  [i2] into the location [j] of [s2]. *)
+  val blit : t -> index -> index -> t -> index -> unit
+  (* [move_by_bytes s i x] moves index [i] by [x] bytes.*)
+  val move_by_bytes : t -> index -> int -> index
+
+  val append : t -> t -> t
+  val sub : t -> index -> index -> t
+  val copy : t -> t
+
+  val read : t -> index -> uchar
+end
+
+module BaseString : BaseStringType = struct
+  include UTF8
+
+  let empty = ""
+
+  let is_valid s = try validate s; true with Malformed_code -> false
+
+  let copy = String.copy
+  let read = look
+  let append = (^)
+  let create = String.create
+  let end_pos s = String.length s
+  let of_string s = if is_valid s then None else Some s
+  let of_string_unsafe s = s
+  let of_ascii s = try Some (UTF8.of_ascii s) with Malformed_code -> None
+  let equal_index s i j = i = j
+  let size s i j = j - i
+  let blit s1 i1 i2 s2 j = String.blit s1 i1 s2 j (i2 - i1)
+  let move_by_bytes s i x = i + x
+
+end
+
+module Text' = struct
+(* 
+ * Rope: Rope: an implementation of the data structure described in
+ *   
+ * Boehm, H., Atkinson, R., and Plass, M. 1995. Ropes: an alternative to
+ * strings. Softw. Pract. Exper. 25, 12 (Dec. 1995), 1315-1330.
+ * 
+ * Motivated by Luca de Alfaro's extensible array implementation Vec.
+ * 
+ * Copyright (C) 2013 Yoriyuki Yamagata <yoriyuki.y@gmail.com>
+ * Copyright (C) 2007 Mauricio Fernandez <mfp@acm.org>
+ * Copyright (C) 2008 Edgar Friendly <thelema314@gmail.com>
+ * Copyright (C) 2008 David Teller, LIFO, Universite d'Orleans
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version,
+ * with the special exception on linking described in file LICENSE.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ *)
+
+  open BatInt.Safe_int
+
+  module B = BaseString
+
+  let int_max (x:int) (y:int) = if x < y then y else x
+  let int_min (x:int) (y:int) = if x < y then x else y
+
+  type base_string = {s : B.t; unused : B.index} 
+	
+  type t = 
+      Empty
+    | Concat of node
+    | Leaf of leaf
+  and node = {left : t; left_length : int; right : t; right_length : int; height : int}
+  and leaf = {b : base_string; 
+	      i : B.index;  (*..............:::::::::::::::::::::.... *)
+	      j : B.index;  (*              ^                    ^    *)
+	      len : int}    (*              i                    j    *)
+
+  let empty = Empty
+
+  let length = function
+      Empty -> 0
+    | Concat node -> node.left_length + node.right_length
+    | Leaf leaf -> leaf.len
+	  
+  let height = function
+      Empty -> 0
+    | Concat node -> node.height
+    | Leaf _ -> 1
+
+	  (* 48 limits max rope size to 220GB on 64 bit,
+	   * ~ 700MB on 32bit (length fields overflow after that) *)
+  let max_height = 48
+      
+  let leaf_size = 256 (* bytes *)
+
+  let make_concat l r =
+    let hl = height l and hr = height r in
+    let cl = length l and cr = length r in
+    Concat {left = l; left_length = cl; 
+	    right = r; right_length = cr;
+	    height = max hl hr}
+
+  let min_len =
+    let fib_tbl = Array.make max_height 0 in
+    let rec fib n = match fib_tbl.(n) with
+      0 ->
+        let last = fib (n - 1) and prev = fib (n - 2) in
+        let r = last + prev in
+        let r = if r > last then r else last in (* check overflow *)
+        fib_tbl.(n) <- r; r
+    | n -> n
+    in
+    fib_tbl.(0) <- leaf_size + 1; fib_tbl.(1) <- 3 * leaf_size / 2 + 1;
+    Array.init max_height (fun i -> if i = 0 then 1 else fib (i - 1))
+      
+  let max_length = min_len.(Array.length min_len - 1)
+      
+  let make_concat l r =
+    let hl = height l and hr = height r in
+    let cl = length l and cr = length r in
+    Concat {left = l; left_length = cl; right = r; right_length = cr; 
+	    height = 1 + int_max hl hr}
+
+  let concat_fast l r = match l with
+    Empty -> r
+  | Leaf _ | Concat _ ->
+      match r with
+        Empty -> l
+      | Leaf _ | Concat _ -> make_concat l r
+	    
+	    (* based on Hans-J. Boehm's *)
+  type forest_element = { mutable c : t; mutable rlen : int }
+
+  let not_empty = function Empty -> false | _ -> true
+
+  let add_forest forest rope len =
+    let i = ref 0 in
+    let sum = ref empty in
+    while len > min_len.(!i+1) do
+      if not_empty forest.(!i).c then begin
+        sum := concat_fast forest.(!i).c !sum;
+        forest.(!i).c <- Empty
+      end;
+      incr i
+    done;
+    sum := concat_fast !sum rope;
+    let sum_len = ref (length !sum) in
+    while !sum_len >= min_len.(!i) do
+      if not_empty forest.(!i).c then begin
+        sum := concat_fast forest.(!i).c !sum;
+        sum_len := !sum_len + forest.(!i).rlen;
+        forest.(!i).c <- Empty;
+      end;
+      incr i
+    done;
+    decr i;
+    forest.(!i).c <- !sum;
+    forest.(!i).rlen <- !sum_len
+	
+  let concat_forest forest =
+    Array.fold_left (fun s x -> concat_fast x.c s) Empty forest
+      
+  let rec balance_insert rope len forest = match rope with
+    Empty -> ()
+  | Leaf _ -> add_forest forest rope len
+  | Concat node when node.height >= max_height || len < min_len.(node.height) ->
+      balance_insert node.left node.left_length forest;
+      balance_insert node.right node.right_length forest
+  | x -> add_forest forest x len (* function or balanced *)
+	
+  let balance r =
+    match r with
+      Empty | Leaf _ -> r
+    | _ ->
+        let forest = Array.init max_height (fun _ -> {c = Empty; rlen = 0}) in
+        balance_insert r (length r) forest;
+        concat_forest forest
+	  
+  let bal_if_needed l r =
+    let r = make_concat l r in
+    if height r < max_height then r else balance r
+      
+  let is_full_tail leaf = B.equal_index leaf.b.s leaf.j leaf.b.unused
+
+  let leaf_append leaf_l leaf_r =
+    let size_l = B.size leaf_l.b.s leaf_l.i leaf_l.j in
+    let size_r = B.size leaf_r.b.s leaf_r.i leaf_r.j in
+    if size_l + size_r <= leaf_size then
+      let s =
+	if size_l + size_r <= B.length leaf_l.b.s && 
+	  is_full_tail leaf_l 
+	then begin
+	  B.blit leaf_r.b.s leaf_r.i leaf_r.j leaf_l.b.s leaf_l.b.unused;
+	  leaf_l.b.s;
+	end else
+	  let s = B.create leaf_size in
+	  B.blit leaf_l.b.s leaf_l.i leaf_l.j s (B.first s);
+	  B.blit leaf_r.b.s leaf_r.i leaf_r.j s (B.move_by_bytes s (B.first s) size_l);
+	  s in
+      let b = {s = leaf_l.b.s; unused = B.move_by_bytes leaf_l.b.s leaf_l.b.unused size_r} in
+      let leaf = {b = b; i = leaf_l.i; 
+		  j = B.move_by_bytes leaf_l.b.s leaf_l.i size_r;
+		  len = leaf_l.len + leaf_r.len} in
+      Leaf leaf
+    else
+      make_concat (Leaf leaf_l) (Leaf leaf_r) (* height = 1 *)
+	
+
+  let concat_leaf l leaf_r = 
+    match l with
+    | Empty -> Leaf leaf_r
+    | Leaf leaf_l -> leaf_append leaf_l leaf_r
+    | Concat node ->
+	match node.right with
+	  Leaf leaf_l ->
+	    Concat {node with right = leaf_append leaf_l leaf_r}
+	| _ -> bal_if_needed l (Leaf leaf_r)
+	      
+  let append l = function
+      Empty -> l
+    | Leaf leaf_r as r -> concat_leaf l leaf_r
+    | Concat node as r ->
+	match node.left with
+	  Leaf leaf_r ->
+	    (match l with
+	      Empty -> r
+	    | Concat _ -> bal_if_needed l r
+	    | Leaf leaf_l -> leaf_append leaf_l leaf_r)
+	| _ -> 
+	    match l with 
+	      Empty -> r
+	    | _ -> bal_if_needed l r
+
+  let leaf_of_uchar u = 
+    let s = B.of_string_unsafe (UTF8.make 1 u) in
+    let b = {s = s; unused = B.end_pos s} in
+    {b = b; i = B.first b.s; j = B.end_pos b.s; len = 1}
+      
+  let append_uchar l u = concat_leaf l (leaf_of_uchar u)
+
+  let of_uchar u = Leaf (leaf_of_uchar u)
+
+  let init ~len ~f =
+    if len < 0 then failwith "Text.init: The length is minus" else
+    let s = B.init len f in
+    let b = {s = s; unused = B.end_pos s} in
+    Leaf {b = b; i = B.first s; j = B.end_pos s; len = len}
+      
+  let of_string s =
+    match B.of_string s with
+      None -> None
+    | Some s ->
+	let b = {s = s; unused = B.end_pos s} in
+	Some (Leaf {b = b; i = B.first b.s; j = B.end_pos b.s; len = B.length s})
+
+  let of_string_exn s = 
+    match of_string s with
+      None -> raise Malformed_code
+    | Some text -> text
+	  
+  let of_ascii s =
+    match B.of_ascii s with
+      None -> None
+    | Some s ->
+	let b = {s = s; unused = B.end_pos s} in
+	Some (Leaf {b = b; i = B.first b.s; j = B.end_pos b.s; len = B.length s})
+
+  let of_ascii_exn s = 
+    match of_string s with
+      None -> raise Malformed_code
+    | Some text -> text
+
+  let of_latin1 s = init (String.length s) (fun i -> UChar.unsafe_chr (Char.code s.[i]))
+
+end
+
 (* 
  * Rope: Rope: an implementation of the data structure described in
  *   
@@ -452,148 +761,148 @@ module Text = struct
     s
 
   exception Invalid_rope
-   
+      
   type t =
       Empty                             (**An empty rope*)
     | Concat of t * int * t * int * int (**[Concat l ls r rs h] is the concatenation of
                                            ropes [l] and [r], where [ls] is the total 
-  					 length of [l], [rs] is the length of [r]
-  					 and [h] is the height of the node in the
-  					 tree, used for rebalancing. *)
+  					   length of [l], [rs] is the length of [r]
+  					   and [h] is the height of the node in the
+  					   tree, used for rebalancing. *)
     | Leaf of int * UTF8.t              (**[Leaf l t] is string [t] with length [l],
-  					 measured in number of Unicode characters.*)
-   
+  					   measured in number of Unicode characters.*)
+	  
   type forest_element = { mutable c : t; mutable len : int }
-   
+	
   let str_append = (^)
   let empty_str = ""
   let string_of_string_list l = String.concat empty_str l
 
 
-   
-  (* 48 limits max rope size to 220GB on 64 bit,
-  * ~ 700MB on 32bit (length fields overflow after that) *)
+      
+      (* 48 limits max rope size to 220GB on 64 bit,
+       * ~ 700MB on 32bit (length fields overflow after that) *)
   let max_height = 48
-   
-  (* actual size will be that plus 1 word header;
-  * the code assumes it's an even num.
-  * 256 gives up to a 50% overhead in the worst case (all leaf nodes near
-  * half-filled *)
+      
+      (* actual size will be that plus 1 word header;
+       * the code assumes it's an even num.
+       * 256 gives up to a 50% overhead in the worst case (all leaf nodes near
+       * half-filled *)
   let leaf_size = 256 (* utf-8 characters, not bytes *)
-  (* =end *)
-   
-  (* =begin code *)
-   
+      (* =end *)
+      
+      (* =begin code *)
+      
   exception Out_of_bounds
-   
+      
   let empty = Empty
-   
+      
 
 
-  (* by construction, there cannot be Empty or Leaf "" leaves *)
+      (* by construction, there cannot be Empty or Leaf "" leaves *)
   let is_empty = function Empty -> true | _ -> false
-   
+      
   let height = function
       Empty | Leaf _ -> 0
     | Concat(_,_,_,_,h) -> h
-   
+	  
   let length = function
       Empty -> 0
     | Leaf (l,_) -> l
     | Concat(_,cl,_,cr,_) -> cl + cr
-   
+	  
   let make_concat l r =
     let hl = height l and hr = height r in
     let cl = length l and cr = length r in
-      Concat(l, cl, r, cr, if hl >= hr then hl + 1 else hr + 1)
-   
+    Concat(l, cl, r, cr, if hl >= hr then hl + 1 else hr + 1)
+      
   let min_len =
     let fib_tbl = Array.make max_height 0 in
     let rec fib n = match fib_tbl.(n) with
-        0 ->
-          let last = fib (n - 1) and prev = fib (n - 2) in
-          let r = last + prev in
-          let r = if r > last then r else last in (* check overflow *)
-            fib_tbl.(n) <- r; r
-      | n -> n
+      0 ->
+        let last = fib (n - 1) and prev = fib (n - 2) in
+        let r = last + prev in
+        let r = if r > last then r else last in (* check overflow *)
+        fib_tbl.(n) <- r; r
+    | n -> n
     in
-      fib_tbl.(0) <- leaf_size + 1; fib_tbl.(1) <- 3 * leaf_size / 2 + 1;
-      Array.init max_height (fun i -> if i = 0 then 1 else fib (i - 1))
-   
+    fib_tbl.(0) <- leaf_size + 1; fib_tbl.(1) <- 3 * leaf_size / 2 + 1;
+    Array.init max_height (fun i -> if i = 0 then 1 else fib (i - 1))
+      
   let max_length = min_len.(Array.length min_len - 1)
-   
+      
   let concat_fast l r = match l with
-      Empty -> r
-    | Leaf _ | Concat(_,_,_,_,_) ->
-        match r with
-            Empty -> l
-          | Leaf _ | Concat(_,_,_,_,_) -> make_concat l r
-   
-  (* based on Hans-J. Boehm's *)
+    Empty -> r
+  | Leaf _ | Concat(_,_,_,_,_) ->
+      match r with
+        Empty -> l
+      | Leaf _ | Concat(_,_,_,_,_) -> make_concat l r
+	    
+	    (* based on Hans-J. Boehm's *)
   let add_forest forest rope len =
     let i = ref 0 in
     let sum = ref empty in
-      while len > min_len.(!i+1) do
-        if forest.(!i).c <> Empty then begin
-          sum := concat_fast forest.(!i).c !sum;
-          forest.(!i).c <- Empty
-        end;
-        incr i
-      done;
-      sum := concat_fast !sum rope;
-      let sum_len = ref (length !sum) in
-        while !sum_len >= min_len.(!i) do
-          if forest.(!i).c <> Empty then begin
-            sum := concat_fast forest.(!i).c !sum;
-            sum_len := !sum_len + forest.(!i).len;
-            forest.(!i).c <- Empty;
-          end;
-          incr i
-        done;
-        decr i;
-        forest.(!i).c <- !sum;
-        forest.(!i).len <- !sum_len
-   
+    while len > min_len.(!i+1) do
+      if forest.(!i).c <> Empty then begin
+        sum := concat_fast forest.(!i).c !sum;
+        forest.(!i).c <- Empty
+      end;
+      incr i
+    done;
+    sum := concat_fast !sum rope;
+    let sum_len = ref (length !sum) in
+    while !sum_len >= min_len.(!i) do
+      if forest.(!i).c <> Empty then begin
+        sum := concat_fast forest.(!i).c !sum;
+        sum_len := !sum_len + forest.(!i).len;
+        forest.(!i).c <- Empty;
+      end;
+      incr i
+    done;
+    decr i;
+    forest.(!i).c <- !sum;
+    forest.(!i).len <- !sum_len
+	
   let concat_forest forest =
     Array.fold_left (fun s x -> concat_fast x.c s) Empty forest
-   
+      
   let rec balance_insert rope len forest = match rope with
-      Empty -> ()
-    | Leaf _ -> add_forest forest rope len
-    | Concat(l,cl,r,cr,h) when h >= max_height || len < min_len.(h) ->
-        balance_insert l cl forest;
-        balance_insert r cr forest
-    | x -> add_forest forest x len (* function or balanced *)
-   
+    Empty -> ()
+  | Leaf _ -> add_forest forest rope len
+  | Concat(l,cl,r,cr,h) when h >= max_height || len < min_len.(h) ->
+      balance_insert l cl forest;
+      balance_insert r cr forest
+  | x -> add_forest forest x len (* function or balanced *)
+	
   let balance r =
     match r with
-        Empty | Leaf _ -> r
-      | _ ->
-          let forest = Array.init max_height (fun _ -> {c = Empty; len = 0}) in
-            balance_insert r (length r) forest;
-            concat_forest forest
-   
+      Empty | Leaf _ -> r
+    | _ ->
+        let forest = Array.init max_height (fun _ -> {c = Empty; len = 0}) in
+        balance_insert r (length r) forest;
+        concat_forest forest
+	  
   let bal_if_needed l r =
     let r = make_concat l r in
-      if height r < max_height then r else balance r
-   
+    if height r < max_height then r else balance r
+      
   let concat_str l = function
       Empty | Concat(_,_,_,_,_) -> invalid_arg "concat_str"
     | Leaf (lenr, rs) as r ->
         match l with
-          | Empty -> r
-          | Leaf (lenl, ls) ->
-              let slen = lenr + lenl in
-              if slen <= leaf_size then Leaf ((lenl+lenr),(str_append ls rs))
-              else make_concat l r (* height = 1 *)
-          | Concat(ll, cll, Leaf (lenlr ,lrs), clr, h) ->
-              let slen = clr + lenr in
-              if clr + lenr <= leaf_size then
-                Concat(ll, cll, Leaf ((lenlr + lenr),(str_append lrs rs)), slen, h)
-              else
-                bal_if_needed l r
-          | _ -> bal_if_needed l r
-   
+        | Empty -> r
+        | Leaf (lenl, ls) ->
+            let slen = lenr + lenl in
+            if slen <= leaf_size then Leaf ((lenl+lenr),(str_append ls rs))
+            else make_concat l r (* height = 1 *)
+        | Concat(ll, cll, Leaf (lenlr ,lrs), clr, h) ->
+            let slen = clr + lenr in
+            if clr + lenr <= leaf_size then
+              Concat(ll, cll, Leaf ((lenlr + lenr),(str_append lrs rs)), slen, h)
+            else
+              bal_if_needed l r
+        | _ -> bal_if_needed l r
+	      
   let append_char c r = concat_str r (Leaf (1, (UTF8.make 1 c)))
 
   let append l = function
@@ -601,31 +910,31 @@ module Text = struct
     | Leaf _ as r -> concat_str l r
     | Concat(Leaf (lenrl,rls),rlc,rr,rc,h) as r ->
         (match l with
-            Empty -> r
-          | Concat(_,_,_,_,_) -> bal_if_needed l r
-          | Leaf (lenl, ls) ->
-              let slen = rlc + lenl in
-                if slen <= leaf_size then
-                  Concat(Leaf((lenrl+lenl),(str_append ls rls)), slen, rr, rc, h)
-                else
-                  bal_if_needed l r)
+          Empty -> r
+        | Concat(_,_,_,_,_) -> bal_if_needed l r
+        | Leaf (lenl, ls) ->
+            let slen = rlc + lenl in
+            if slen <= leaf_size then
+              Concat(Leaf((lenrl+lenl),(str_append ls rls)), slen, rr, rc, h)
+            else
+              bal_if_needed l r)
     | r -> (match l with Empty -> r | _ -> bal_if_needed l r)
-   
+	  
   let ( ^^^ ) = append
 
   let prepend_char c r = append (Leaf (1,(UTF8.make 1 c))) r
-   
+      
   let get r i = 
     let rec aux i = function
-      Empty -> raise Out_of_bounds
-    | Leaf (lens, s) ->
-        if i >= 0 && i < lens then UTF8.get s i
-        else raise Out_of_bounds
-    | Concat (l, cl, r, cr, _) ->
-        if i < cl then aux i l
-        else aux (i - cl) r
+	Empty -> raise Out_of_bounds
+      | Leaf (lens, s) ->
+          if i >= 0 && i < lens then UTF8.get s i
+          else raise Out_of_bounds
+      | Concat (l, cl, r, cr, _) ->
+          if i < cl then aux i l
+          else aux (i - cl) r
     in aux i r
-   
+      
   let copy_set us cpos c =
     let ipos = UTF8.ByteIndex.of_char_idx us cpos in 
     let jpos = UTF8.ByteIndex.next us ipos in
@@ -637,55 +946,55 @@ module Text = struct
     let rec aux i = function
         Empty -> raise Out_of_bounds
       | Leaf (lens, s) ->
-  	if i >= 0 && i < lens then
-  	  let s = copy_set s i v in
-              Leaf (lens, s)
-  	else raise Out_of_bounds
+  	  if i >= 0 && i < lens then
+  	    let s = copy_set s i v in
+            Leaf (lens, s)
+  	  else raise Out_of_bounds
       | Concat(l, cl, r, cr, _) ->
-  	if i < cl then append (aux i l) r
-  	else append l (aux (i - cl) r)
+  	  if i < cl then append (aux i l) r
+  	  else append l (aux (i - cl) r)
     in aux i r
 
 
   module Iter =
-  struct
+    struct
 
 
-    (* Iterators are used for iterating efficiently over multiple ropes
-       at the same time *)
+      (* Iterators are used for iterating efficiently over multiple ropes
+	 at the same time *)
 
-    type iterator = {
-      mutable leaf : UTF8.t;
-      (* Current leaf in which the iterator is *)
-      mutable idx : UTF8.ByteIndex.b_idx;
-      (* Current byte position of the iterator *)
-      mutable rest : t list;
-      (* Ropes not yet visited *)
-    }
+      type iterator = {
+	  mutable leaf : UTF8.t;
+	  (* Current leaf in which the iterator is *)
+	  mutable idx : UTF8.ByteIndex.b_idx;
+	  (* Current byte position of the iterator *)
+	  mutable rest : t list;
+	  (* Ropes not yet visited *)
+	}
 
-    type t = iterator option
+      type t = iterator option
 
-    (* Initial iterator state: *)
-    let make rope = { leaf = UTF8.empty;
-                      idx = UTF8.ByteIndex.first;
-                      rest = if rope = Empty then [] else [rope] }
+	    (* Initial iterator state: *)
+      let make rope = { leaf = UTF8.empty;
+			idx = UTF8.ByteIndex.first;
+			rest = if rope = Empty then [] else [rope] }
 
-    let rec next_leaf = function
-      | Empty :: l ->
-          next_leaf l
-      | Leaf(len, str) :: l ->
-          Some(str, l)
-      | Concat(left, left_len, right, right_len, height) :: l ->
-          next_leaf (left :: right :: l)
-      | [] ->
-          None
+      let rec next_leaf = function
+	| Empty :: l ->
+            next_leaf l
+	| Leaf(len, str) :: l ->
+            Some(str, l)
+	| Concat(left, left_len, right, right_len, height) :: l ->
+            next_leaf (left :: right :: l)
+	| [] ->
+            None
 
-    (* Advance the iterator to the next position, and return current
-       character: *)
-    let rec next iter =
-      if UTF8.ByteIndex.at_end iter.leaf iter.idx then
-        (* We are at the end of the current leaf, find another one: *)
-        match next_leaf iter.rest with
+	      (* Advance the iterator to the next position, and return current
+		 character: *)
+      let rec next iter =
+	if UTF8.ByteIndex.at_end iter.leaf iter.idx then
+          (* We are at the end of the current leaf, find another one: *)
+          match next_leaf iter.rest with
           | None ->
               None
           | Some(leaf, rest) ->
@@ -695,17 +1004,17 @@ module Text = struct
 		iter.rest <- rest;
 		Some(UTF8.ByteIndex.look leaf UTF8.ByteIndex.first)
 	      end
-      else begin
-        (* Just advance in the current leaf: *)
-        let ch = UTF8.ByteIndex.look iter.leaf iter.idx in
-        iter.idx <- UTF8.ByteIndex.next iter.leaf iter.idx;
-        Some ch
-      end
- 
-    (* Same thing but map leafs: *)
-    let rec next_map f iter =
-      if UTF8.ByteIndex.at_end iter.leaf iter.idx then
-        match next_leaf iter.rest with
+	else begin
+          (* Just advance in the current leaf: *)
+          let ch = UTF8.ByteIndex.look iter.leaf iter.idx in
+          iter.idx <- UTF8.ByteIndex.next iter.leaf iter.idx;
+          Some ch
+	end
+	    
+	    (* Same thing but map leafs: *)
+      let rec next_map f iter =
+	if UTF8.ByteIndex.at_end iter.leaf iter.idx then
+          match next_leaf iter.rest with
           | None ->
               None
           | Some(leaf, rest) ->
@@ -714,27 +1023,27 @@ module Text = struct
               iter.idx <- UTF8.ByteIndex.next leaf UTF8.ByteIndex.first;
               iter.rest <- rest;
               Some(UTF8.ByteIndex.look leaf UTF8.ByteIndex.first)
-      else begin
-        let ch = UTF8.ByteIndex.look iter.leaf iter.idx in
-        iter.idx <- UTF8.ByteIndex.next iter.leaf iter.idx;
-        Some ch
-      end
+	else begin
+          let ch = UTF8.ByteIndex.look iter.leaf iter.idx in
+          iter.idx <- UTF8.ByteIndex.next iter.leaf iter.idx;
+          Some ch
+	end
 
-    (* Same thing but in reverse order: *)
+	    (* Same thing but in reverse order: *)
 
-    let rec prev_leaf = function
-      | Empty :: l ->
-          prev_leaf l
-      | Leaf(len, str) :: l ->
-          Some(str, l)
-      | Concat(left, left_len, right, right_len, height) :: l ->
-          prev_leaf (right :: left :: l)
-      | [] ->
-          None
+      let rec prev_leaf = function
+	| Empty :: l ->
+            prev_leaf l
+	| Leaf(len, str) :: l ->
+            Some(str, l)
+	| Concat(left, left_len, right, right_len, height) :: l ->
+            prev_leaf (right :: left :: l)
+	| [] ->
+            None
 
-    let prev iter =
-      if iter.idx = UTF8.ByteIndex.first then
-        match prev_leaf iter.rest with
+      let prev iter =
+	if iter.idx = UTF8.ByteIndex.first then
+          match prev_leaf iter.rest with
           | None ->
               None
           | Some(leaf, rest) ->
@@ -742,24 +1051,24 @@ module Text = struct
               iter.idx <- UTF8.ByteIndex.last leaf;
               iter.rest <- rest;
               Some(UTF8.ByteIndex.look leaf iter.idx)
-      else begin
-        iter.idx <- UTF8.ByteIndex.prev iter.leaf iter.idx;
-        Some(UTF8.ByteIndex.look iter.leaf iter.idx)
-      end
-  end
+	else begin
+          iter.idx <- UTF8.ByteIndex.prev iter.leaf iter.idx;
+          Some(UTF8.ByteIndex.look iter.leaf iter.idx)
+	end
+    end
 
-  (* Can be improved? *)
+      (* Can be improved? *)
   let compare a b =
     let ia = Iter.make a and ib = Iter.make b in
     let rec loop _ =
       match Iter.next ia, Iter.next ib with
-        | None, None -> 0
-        | None, _ -> -1
-        | _, None -> 1
-        | Some ca, Some cb ->
-            match UChar.compare ca cb with
-              | 0 -> loop ()
-              | n -> n
+      | None, None -> 0
+      | None, _ -> -1
+      | _, None -> 1
+      | Some ca, Some cb ->
+          match UChar.compare ca cb with
+          | 0 -> loop ()
+          | n -> n
     in
     loop ()
 

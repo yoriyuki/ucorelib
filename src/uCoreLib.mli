@@ -1,5 +1,3 @@
-
-
 (** Unicode characters.
 
    This module implements Unicode characters.
@@ -39,7 +37,8 @@
 (* You can contact the authour by sending email to *)
 (* yori@users.sourceforge.net *)
 
-	
+(** Exceptions.  In addition, this module could raises Invalid_arg and*)
+(** BatNumber.Overflow *)	
 exception Out_of_range
 exception Malformed_code
 
@@ -246,6 +245,96 @@ module UTF8 : sig
   end with type buf = Buffer.t
 end
 
+module Text' : sig
+  type t
+
+  val empty : t
+
+  val length : t -> int
+
+  val max_length : int
+
+(** [init len f] 
+    returns a new text which contains [len] Unicode characters.
+    The i-th Unicode character is initialized by [f i].  Raises
+    Failure if [len] is minus. *)	
+  val init : len:int -> f:(int -> uchar) -> t
+
+  (** Returns a text which consists of the given single character. *)
+  val of_uchar : uchar -> t
+
+  (** [of_string s] converts UTF-8 encoded string [s] to Text.t 
+      If [s] is an invalid UTF-8 string, returns None *)
+  val of_string : string -> t option
+  (** Same as above but raises Malformed_code instead of returing None *)
+  val of_string_exn : string -> t
+
+  (** Returns UTF-8 encoded string. *)
+  val string_of : t -> string
+
+  (** [of_string s] converts Ascii encoded string [s] to Text.t 
+      If [s] is an invalid Ascii string, returns None *)
+  val of_ascii : string -> t option
+  (** Same as above but raises Malformed_code instead of returing None *)
+  val of_ascii_exn : string -> t
+
+  (** [of_string s] converts Latin-a encoded string [s] to Text.t *)
+  val of_latin1 : string -> t
+
+  (** Append two texts *)
+  val append : t -> t -> t
+
+  (** Append one Unicode character to the last of the text *)
+  val append_uchar : t -> uchar -> t
+
+  (** Byte order of texts *)
+  val compare : t -> t -> int
+
+  (** [get s i] gets [i]-th character of [s] *)
+  val get : t -> int -> uchar
+
+  (** Iterator.  Also behaves like a zipper *)
+  type iterator
+
+  (** The head of the text *)
+  val first : t -> iterator
+
+  (** Points the last character of the text *)
+  val last : t -> iterator
+
+  (** Moving around an iterator *)
+  val next : iterator -> iterator option
+  (** Raises Out_of_range if the iterator already locates in the last
+  character of the underlining text. *)
+  val next_exn : iterator -> iterator
+  (** [move i n] returns the iterator which locates [n]-th*)
+  (** characters from [i].  If such a location does not exist, return*)
+  (** None.  If [n] is negative, move the left. *)
+  val move : iterator -> int -> iterator option
+  (** The same as above but raises Out_of_range instead or returning None.*)
+  val move_exn : iterator -> int -> iterator
+  (** Move the iterator as much as possible toward the [n]-th
+  character.*)
+  val move_as_possible : iterator -> int -> iterator
+
+  (** Returns the value of the location which the iterator points. *)
+  val value : iterator -> uchar
+
+  (** Returns the underlining text of the give iterator. *)
+  val base : iterator -> t
+
+  (** Zipper like operations. *)
+  (** [insert i t] inserts [t] inyo the right of [i]. *)
+  val insert : iterator -> t -> iterator 
+  (** [delete_left i] deletes the left side of [i].  *)
+  val delete_left : iterator -> iterator
+  (** [delete_right i] deletes the right side of [i].  *)
+  val delete_right : iterator -> iterator
+  (** [sub i n] creates the iterator which runs over substring which
+  begins position [i] to [n]-th character from [i].*)
+  val sub : iterator -> int -> iterator
+end
+
 (* Rope: a simple implementation of ropes as described in
  
 Boehm, H., Atkinson, R., and Plass, M. 1995. Ropes: an alternative to
@@ -253,7 +342,7 @@ strings. Softw. Pract. Exper. 25, 12 (Dec. 1995), 1315-1330.
  
 Motivated by Luca de Alfaro's extensible array implementation Vec.
  
-Copyright (C) 2011 Yoriyuki Yamagata <yoriyuki.y@gmail.com>
+Copyright (C) 2011, 2013 Yoriyuki Yamagata <yoriyuki.y@gmail.com>
               2007 Mauricio Fernandez <mfp@acm.org>
 http://eigenclass.org
  
