@@ -426,8 +426,10 @@ module type BaseStringType = sig
   val end_pos : t -> index
   val out_of_range : t -> index -> bool
   val next : t -> index -> index
+  val prev : t -> index -> index
   val move : t -> index -> int -> index
   val equal_index : t -> index -> index -> bool
+  val compare_index : t -> index -> index -> int
 
   (* Low level functions *)
   (* bytes of substring *)
@@ -443,6 +445,7 @@ module type BaseStringType = sig
   val copy : t -> t
 
   val read : t -> index -> uchar
+  val write : t -> index -> uchar -> index
 end
 
 module BaseString : BaseStringType = struct
@@ -457,14 +460,42 @@ module BaseString : BaseStringType = struct
   let append = (^)
   let create = String.create
   let end_pos s = String.length s
-  let of_string s = if is_valid s then None else Some s
+  let of_string s = if is_valid s then None else Some (String.copy s)
   let of_string_unsafe s = s
   let of_ascii s = try Some (UTF8.of_ascii s) with Malformed_code -> None
   let equal_index s i j = i = j
   let size s i j = j - i
   let blit s1 i1 i2 s2 j = String.blit s1 i1 s2 j (i2 - i1)
   let move_by_bytes s i x = i + x
-
+ 
+  let write s i u =
+    let masq = 0b111111 in
+    let k = UChar.code u in
+    if k <= 0x7f then
+      if i >= String.length s then i else begin
+	s.[i] <- Char.unsafe_chr k;
+	i + 1
+      end
+    else if k <= 0x7ff then
+      if i >= String.length s - 1 then i else begin
+	s.[i] <- Char.unsafe_chr (0xc0 lor (k lsr 6));
+	s.[i+1] <- (Char.unsafe_chr (0x80 lor (k land masq)));
+	i+2
+    end else if k <= 0xffff then
+      if i >= String.length s - 2 then i else begin
+	s.[i] <- Char.unsafe_chr (0xe0 lor (k lsr 12));
+	s.[i+1] <- Char.unsafe_chr (0x80 lor ((k lsr 6) land masq));
+	s.[i+2] <- Char.unsafe_chr (0x80 lor (k land masq));
+	i + 3
+    end else 
+      if i >= String.length s - 3 then i else
+      begin
+	s.[i] <- Char.unsafe_chr (0xf0 + (k lsr 18));
+	s.[i+1] <- Char.unsafe_chr (0x80 lor ((k lsr 12) land masq));
+	s.[i+2] <- Char.unsafe_chr (0x80 lor ((k lsr 6) land masq));
+	s.[i+3] <- Char.unsafe_chr (0x80 lor (k land masq));
+	i + 4
+      end
 end
 
 module Text' = struct
@@ -646,7 +677,6 @@ module Text' = struct
     else
       make_concat (Leaf leaf_l) (Leaf leaf_r) (* height = 1 *)
 	
-
   let concat_leaf l leaf_r = 
     match l with
     | Empty -> Leaf leaf_r
@@ -672,14 +702,40 @@ module Text' = struct
 	      Empty -> r
 	    | _ -> bal_if_needed l r
 
+  let new_block_uchar u = 
+    let s = B.create leaf_size in
+    let i = B.write s (B.first s) u in
+    let b = {s = s; unused = i} in
+    Leaf {b = b; i = (B.first s); j = i; len = 1}
+
+  let leaf_append_uchar leaf u =
+    if is_full_tail leaf then
+      let k = B.write leaf.b.s leaf.j u in
+      if B.equal_index leaf.b.s k leaf.j then
+	make_concat (Leaf leaf) (new_block_uchar u)
+      else
+	let b = {leaf.b with unused = k} in
+	let leaf = {b = b; i = leaf.i; j = k; len = leaf.len + 1} in
+	Leaf leaf
+    else
+      make_concat (Leaf leaf) (new_block_uchar u)
+	
   let leaf_of_uchar u = 
     let s = B.of_string_unsafe (UTF8.make 1 u) in
     let b = {s = s; unused = B.end_pos s} in
     {b = b; i = B.first b.s; j = B.end_pos b.s; len = 1}
-      
-  let append_uchar l u = concat_leaf l (leaf_of_uchar u)
 
   let of_uchar u = Leaf (leaf_of_uchar u)
+      
+  let append_uchar l u = 
+    match l with
+    | Empty -> Leaf (leaf_of_uchar u)
+    | Leaf leaf_l -> leaf_append_uchar leaf_l u
+    | Concat node ->
+	match node.right with
+	  Leaf leaf_l ->
+	    Concat {node with right = leaf_append_uchar leaf_l u}
+	| _ -> bal_if_needed l (Leaf (leaf_of_uchar u))
 
   let init ~len ~f =
     if len < 0 then failwith "Text.init: The length is minus" else
@@ -711,7 +767,238 @@ module Text' = struct
       None -> raise Malformed_code
     | Some text -> text
 
-  let of_latin1 s = init (String.length s) (fun i -> UChar.unsafe_chr (Char.code s.[i]))
+  let of_latin1 s = 
+    init (String.length s) (fun i -> 
+      UChar.unsafe_chr (Char.code s.[i]))
+
+  let rec get t n =
+    match t with
+      Empty -> None
+    | Leaf leaf ->
+	if n >= leaf.len then None else
+	let i = B.move leaf.b.s leaf.i n in
+	Some (B.read leaf.b.s i)
+    | Concat node ->
+	if n < node.left_length then get node.left n else
+	let n = n - node.left_length in
+	get node.right n
+
+  let rec get_exn t n =
+    match t with
+      Empty -> invalid_arg "index out of bounds"
+    | Leaf leaf ->
+	if n >= leaf.len then invalid_arg "index out of bounds" else
+	let i = B.move leaf.b.s leaf.i n in
+	B.read leaf.b.s i
+    | Concat node ->
+	if n < node.left_length then get_exn node.left n else
+	let n = n - node.left_length in
+	get_exn node.right n
+
+  (* In Left (p, t), p is the path to the parent and t is the right sibling.  *)
+  type path = Top | Left of path * t | Right of t * path 
+
+  type iterator = {path : path; leaf : leaf; index : B.index}
+
+  let empty_leaf = 
+    let base = {s = B.empty; unused = B.end_pos B.empty} in
+    {b = base; i = B.first B.empty; j = B.end_pos B.empty; len = 0} 
+
+  let rec first_leaf_sub path = function
+      Empty -> (Top, empty_leaf)
+    | Leaf leaf -> (path, leaf)
+    | Concat node ->
+	first_leaf_sub (Left (path, node.right)) node.left
+	    
+  let first_leaf = first_leaf_sub Top
+
+  let first t =
+    let p, leaf = first_leaf t in
+    {path = p; leaf = leaf; index = B.first leaf.b.s}
+
+  let rec end_leaf_sub path = function
+      Empty -> (Top, empty_leaf)
+    | Leaf leaf -> (path, leaf)
+    | Concat node ->
+	end_leaf_sub (Right (node.left, path)) node.right
+	    
+  let end_leaf = end_leaf_sub Top
+
+  let end_pos t =
+    let p, leaf = end_leaf t in
+    {path = p; leaf = leaf; index = B.end_pos leaf.b.s}
+
+  let rec nth_aux p t n =
+    match t with
+      Empty -> None
+    | Leaf leaf ->
+	if n >= leaf.len then None else
+	let i = B.move leaf.b.s leaf.i n in
+	Some {path = p; leaf = leaf; index = i}
+    | Concat node ->
+	if n < node.left_length then 
+	  nth_aux (Left (p, node.right)) node.left n 
+	else
+	  let n = n - node.left_length in
+	  nth_aux (Right (node.left, p)) node.right n
+
+  let nth t n = nth_aux Top t n
+
+  let rec nth_exn_aux p t n =
+    match t with
+      Empty -> invalid_arg "index out of bounds"
+    | Leaf leaf ->
+	if n >= leaf.len then invalid_arg "index out of bounds" else
+	let i = B.move leaf.b.s leaf.i n in
+        {path = p; leaf = leaf; index = i}
+    | Concat node ->
+	if n < node.left_length then 
+	  nth_exn_aux (Left (p, node.right)) node.left n 
+	else
+	  let n = n - node.left_length in
+	  nth_exn_aux (Right (node.left, p)) node.right n
+
+  let nth_exn t n = nth_exn_aux Top t n
+
+  let rec next_leaf = function
+      Top -> None
+    | Left (p, t) ->
+	Some (first_leaf_sub p t)
+    | Right (t, p) ->
+	next_leaf p
+
+  let next it =
+    if not (B.equal_index it.leaf.b.s it.index it.leaf.j) then 
+      let i = B.next it.leaf.b.s it.index in
+      Some {it with index = i} 
+    else match next_leaf it.path with 
+      None -> None
+    | Some (path, leaf) -> 
+	Some {path = path; leaf = leaf; index = leaf.i}
+
+  let next_exn it =
+    if not (B.equal_index it.leaf.b.s it.index it.leaf.j) then 
+      let i = B.next it.leaf.b.s it.index in
+      {it with index = i} 
+    else match next_leaf it.path with 
+      None -> invalid_arg "index out of bounds"
+    | Some (path, leaf) -> 
+        {path = path; leaf = leaf; index = leaf.i}
+
+  let rec prev_leaf = function
+      Top -> None
+    | Left (p, t) ->
+	prev_leaf p
+    | Right (t, p) ->
+	Some (end_leaf_sub p t)
+
+  let prev it =
+    if not (B.equal_index it.leaf.b.s it.index it.leaf.i) then 
+      let i = B.prev it.leaf.b.s it.index in
+      Some {it with index = i} 
+    else match prev_leaf it.path with 
+      None -> None
+    | Some (path, leaf) -> 
+	Some {path = path; leaf = leaf; index = B.prev leaf.b.s leaf.j}
+
+  let prev_exn it =
+    if not (B.equal_index it.leaf.b.s it.index it.leaf.i) then 
+      let i = B.prev it.leaf.b.s it.index in
+      {it with index = i} 
+    else match prev_leaf it.path with 
+      None -> invalid_arg "index out of	bounds"
+    | Some (path, leaf) -> 
+	{path = path; leaf = leaf; index = B.prev leaf.b.s leaf.j}
+
+  let rec base_aux path sub =
+    match path with
+      Top -> sub
+    | Left (p, t) ->
+	base_aux p (make_concat sub t)
+    | Right (t, p) ->
+	base_aux p (make_concat t sub)
+
+  let rec base it = base_aux it.path (Leaf it.leaf)
+
+  let move_ahead_leaf it n =
+    let rec loop i n =
+      if B.compare_index it.leaf.b.s i it.leaf.j > 0 then 
+	`Out_of_range ({it with index = it.leaf.j}, n) 
+      else if n <= 0 then `Success {it with index = i} else 
+      loop (B.next it.leaf.b.s i) (n - 1) in
+    loop it.index n
+        
+  let rec move_ahead path sub it n =
+    match sub with
+      Empty -> `Out_of_range (it, n)
+    | Leaf leaf -> 
+	let it = 
+	  if it.leaf == leaf then it else
+	  {path = path; leaf = leaf; index = leaf.i} in
+       	(match move_ahead_leaf it n with
+	  `Success it as ret -> ret
+	| `Out_of_range (it, n) -> 
+	    (match path with
+	      Top -> `Out_of_range (it, n)
+	    | Left (p, t) ->
+		move_ahead (Right (sub, p)) t it n
+	    | Right (t, p) ->
+		let node = make_concat t sub in
+		move_ahead p node it n))
+    | Concat node ->
+	if node.left_length >= n then 
+	  move_ahead (Left (path, node.right)) node.left it n
+	else
+	  move_ahead (Right (node.left, path)) node.right it (n - node.left_length)
+
+  let move_behind_leaf it n =
+    let rec loop i n =
+      if B.compare_index it.leaf.b.s i it.leaf.i < 0 then 
+	`Out_of_range ({it with index = it.leaf.i}, n) 
+      else if n <= 0 then `Success {it with index = i} else 
+      loop (B.prev it.leaf.b.s i) (n-1) in
+    loop it.index n
+        
+  let rec move_behind path sub it n =
+    match sub with
+      Empty -> `Out_of_range (it, n)
+    | Leaf leaf -> 
+	let it = 
+	  if it.leaf == leaf then it else
+	  {path = path; leaf = leaf; index = leaf.j} in
+       	(match move_behind_leaf it n with
+	  `Success it as ret -> ret
+	| `Out_of_range (it, n) -> 
+	    (match path with
+	      Top -> `Out_of_range (it, n)
+	    | Right (t, p) ->
+		move_behind (Left (p, sub)) t it n
+	    | Left (p, t) ->
+		let node = make_concat sub t in
+		move_behind p node it n))
+    | Concat node ->
+	if node.right_length >= n then 
+	  move_behind (Right (node.left, path)) node.right it n
+	else
+	  move_ahead (Right (node.right, path)) node.left it (n - node.left_length)
+
+  let move it n =
+    if n > 0 then move_ahead it.path (Leaf it.leaf) it n else
+    if n < 0 then move_behind it.path (Leaf it.leaf) it (-n) else
+    `Success it 
+
+  let move_exn it n =
+    match move it n with
+      `Success it -> it
+    | `Out_of_range _ -> invalid_arg "number out of bounds"
+
+  let move_as_possible it n =
+    match move it n with
+      `Success it -> it
+    | `Out_of_range (it, n) -> it
+
+
+  let value it = B.read it.leaf.b.s it.index
 
 end
 

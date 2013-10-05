@@ -258,7 +258,7 @@ module Text' : sig
     returns a new text which contains [len] Unicode characters.
     The i-th Unicode character is initialized by [f i].  Raises
     Failure if [len] is minus. *)	
-  val init : len:int -> f:(int -> uchar) -> t
+  val init : int -> (int -> uchar) -> t
 
   (** Returns a text which consists of the given single character. *)
   val of_uchar : uchar -> t
@@ -291,27 +291,44 @@ module Text' : sig
   val compare : t -> t -> int
 
   (** [get s i] gets [i]-th character of [s] *)
-  val get : t -> int -> uchar
+  val get : t -> int -> uchar option
+  (** Raises Invalid_arg *)
+  val get_exn : t -> int -> uchar
 
-  (** Iterator.  Also behaves like a zipper *)
+  (** Iterator.  Also behaves like a zipper.  Iterator can point the
+  location after the last character of the text. *)
   type iterator
 
   (** The head of the text *)
   val first : t -> iterator
-
-  (** Points the last character of the text *)
-  val last : t -> iterator
+  (** Points the end of the text *)
+  val end_pos : t -> iterator
+  (** [nth t i] return the iterator which points the begininng of
+  [i+1]-th character of [t]. *)
+  val nth : t -> int -> iterator option
+  (** Raises Invalid_argument "index out of bounds" if the argument is
+  out of bound. *)
+  val nth_exn : t -> int -> iterator
 
   (** Moving around an iterator *)
   val next : iterator -> iterator option
-  (** Raises Out_of_range if the iterator already locates in the last
-  character of the underlining text. *)
+  (** Raises Invalid_argument "index out of bounds" if the iterator
+  already locates after the last character of the underlining text. *)
   val next_exn : iterator -> iterator
+  (** Points the privious character *)
+  val prev : iterator -> iterator option
+  (** Raises Invalid_argument "index out of bounds" if the iterator
+  already locates in the first character of the underlining text. *)
+  val prev_exn : iterator -> iterator
   (** [move i n] returns the iterator which locates [n]-th*)
   (** characters from [i].  If such a location does not exist, return*)
-  (** None.  If [n] is negative, move the left. *)
-  val move : iterator -> int -> iterator option
-  (** The same as above but raises Out_of_range instead or returning None.*)
+  (** [`Out_of_range (it, n)].  [it] points the last position which
+  [move] can success, and [n] is the number of the move to be done.
+  If [n] is negative, move the left. *)
+  val move : iterator -> int -> 
+    [`Success of iterator | `Out_of_range of iterator * int]
+  (** The same as above but raises Invalid_argument "index out of
+  bounds" instead or returning None.*) 
   val move_exn : iterator -> int -> iterator
   (** Move the iterator as much as possible toward the [n]-th
   character.*)
@@ -333,6 +350,9 @@ module Text' : sig
   (** [sub i n] creates the iterator which runs over substring which
   begins position [i] to [n]-th character from [i].*)
   val sub : iterator -> int -> iterator
+
+  (** Fold.*)
+  val fold : t -> init:'a -> f:('a -> uchar -> 'a) -> t -> 'a
 end
 
 (* Rope: a simple implementation of ropes as described in
