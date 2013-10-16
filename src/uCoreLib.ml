@@ -250,18 +250,20 @@ module UTF8 = struct
 
   let of_string_unsafe s = s 
   let to_string_unsafe s = s
-      
-  let rec length_aux s c i =
-    if i >= String.length s then c else
+
+  let rec distance_aux s i j c =
+    if i >= j then c else
     let n = Char.code (String.unsafe_get s i) in
     let k =
       if n < 0x80 then 1 else
       if n < 0xe0 then 2 else
       if n < 0xf0 then 3 else 4
     in
-    length_aux s (c + 1) (i + k)
-      
-  let length s = length_aux s 0 0
+    distance_aux s (i + k) j (c + 1)
+
+  let distance s i j = distance_aux s i j 0
+
+  let length s = distance s 0 (String.length s)
       
   let rec iter_aux proc s i =
     if i >= String.length s then () else
@@ -430,6 +432,7 @@ module type BaseStringType = sig
   val move : t -> index -> int -> index
   val equal_index : t -> index -> index -> bool
   val compare_index : t -> index -> index -> int
+  val distance : t -> index -> index -> int
 
   (* Low level functions *)
   (* bytes of substring *)
@@ -440,9 +443,7 @@ module type BaseStringType = sig
   (* [move_by_bytes s i x] moves index [i] by [x] bytes.*)
   val move_by_bytes : t -> index -> int -> index
 
-  val append : t -> t -> t
-  val sub : t -> index -> index -> t
-  val copy : t -> t
+  val add_substring : Buffer.t -> t -> index -> index -> unit
 
   val read : t -> index -> uchar
   val write : t -> index -> uchar -> index
@@ -467,6 +468,7 @@ module BaseString : BaseStringType = struct
   let size s i j = j - i
   let blit s1 i1 i2 s2 j = String.blit s1 i1 s2 j (i2 - i1)
   let move_by_bytes s i x = i + x
+  let add_substring b s i j = Buffer.add_substring b s i (j - i)
  
   let write s i u =
     let masq = 0b111111 in
@@ -535,7 +537,7 @@ module Text' = struct
   let int_max (x:int) (y:int) = if x < y then y else x
   let int_min (x:int) (y:int) = if x < y then x else y
 
-  type base_string = {s : B.t; unused : B.index} 
+  type base_string = {s : B.t; mutable unused : B.index} 
 	
   type t = 
       Empty
@@ -641,16 +643,16 @@ module Text' = struct
   | x -> add_forest forest x len (* function or balanced *)
 	
   let balance r =
+    if height r < max_height then r else
     match r with
       Empty | Leaf _ -> r
     | _ ->
         let forest = Array.init max_height (fun _ -> {c = Empty; rlen = 0}) in
         balance_insert r (length r) forest;
         concat_forest forest
-	  
+
   let bal_if_needed l r =
-    let r = make_concat l r in
-    if height r < max_height then r else balance r
+    let r = make_concat l r in balance r
       
   let is_full_tail leaf = B.equal_index leaf.b.s leaf.j leaf.b.unused
 
@@ -669,9 +671,8 @@ module Text' = struct
 	  B.blit leaf_l.b.s leaf_l.i leaf_l.j s (B.first s);
 	  B.blit leaf_r.b.s leaf_r.i leaf_r.j s (B.move_by_bytes s (B.first s) size_l);
 	  s in
-      let b = {s = leaf_l.b.s; unused = B.move_by_bytes leaf_l.b.s leaf_l.b.unused size_r} in
-      let leaf = {b = b; i = leaf_l.i; 
-		  j = B.move_by_bytes leaf_l.b.s leaf_l.i size_r;
+      leaf_l.b.unused <- B.move_by_bytes leaf_l.b.s leaf_l.b.unused size_r;
+      let leaf = {leaf_l with j = leaf_l.b.unused;
 		  len = leaf_l.len + leaf_r.len} in
       Leaf leaf
     else
@@ -713,10 +714,11 @@ module Text' = struct
       let k = B.write leaf.b.s leaf.j u in
       if B.equal_index leaf.b.s k leaf.j then
 	make_concat (Leaf leaf) (new_block_uchar u)
-      else
-	let b = {leaf.b with unused = k} in
-	let leaf = {b = b; i = leaf.i; j = k; len = leaf.len + 1} in
+      else begin
+	leaf.b.unused <- k;
+	let leaf = {leaf with j = k; len = leaf.len + 1} in
 	Leaf leaf
+      end
     else
       make_concat (Leaf leaf) (new_block_uchar u)
 	
@@ -737,7 +739,7 @@ module Text' = struct
 	    Concat {node with right = leaf_append_uchar leaf_l u}
 	| _ -> bal_if_needed l (Leaf (leaf_of_uchar u))
 
-  let init ~len ~f =
+  let init len f =
     if len < 0 then failwith "Text.init: The length is minus" else
     let s = B.init len f in
     let b = {s = s; unused = B.end_pos s} in
@@ -918,7 +920,14 @@ module Text' = struct
     | Right (t, p) ->
 	base_aux p (make_concat t sub)
 
-  let rec base it = base_aux it.path (Leaf it.leaf)
+  let base it = balance (base_aux it.path (Leaf it.leaf))
+
+  let rec pos_path = function
+      Top -> 0
+    | Left (p, t) -> pos_path p
+    | Right (t, p) -> length t
+
+  let pos it = pos_path it.path + B.distance it.leaf.b.s it.leaf.i it.index 
 
   let move_ahead_leaf it n =
     let rec loop i n =
@@ -997,9 +1006,98 @@ module Text' = struct
       `Success it -> it
     | `Out_of_range (it, n) -> it
 
+  let rec delete_left_pos path sub =
+    match path with
+      Top -> (path, sub)
+    | Left (p, t) -> delete_left_pos p t
+    | Right (t, p) -> (p, sub)
+
+  let delete_left it =
+    let p, _ = delete_left_pos it.path (Leaf it.leaf) in
+    let leaf = {it.leaf with i = it.index; 
+		len = B.distance it.leaf.b.s it.index it.leaf.j} in
+    let it = {it with path = p; leaf = leaf} in
+    let b = base it in
+    first b
+
+  let rec delete_right_pos path sub =
+    match path with
+      Top -> (path, sub)
+    | Right (t, p) -> delete_right_pos p t
+    | Left (p, t) -> (p, sub)
+
+  let delete_right it =
+    let p, _ = delete_right_pos it.path (Leaf it.leaf) in
+    let leaf = {it.leaf with j = it.index; 
+		len = B.distance it.leaf.b.s it.leaf.i it.index} in
+    let it = {it with path = p; leaf = leaf} in
+    let b = base it in
+    end_pos b
+
+  let sub it len =
+    let it = delete_left it in
+    match move it len with
+      `Out_of_range _ -> None
+    | `Success it ->
+	Some (delete_right it)
+
+  let sub_exn it len =
+    match sub it len with
+      None -> invalid_arg "iterator out of bound"
+    | Some it -> it
+
+  let insert it text =
+    let n = pos it in
+    let left = base (delete_right it) in 
+    let right = base (delete_left it) in
+    let base = (append (append left text) right) in
+    match nth base n with 
+      None -> assert false
+    | Some it -> it 
 
   let value it = B.read it.leaf.b.s it.index
 
+  let fold_leaf leaf a f =
+    let rec loop a i =
+      if B.compare_index leaf.b.s i leaf.j >= 0 then a else
+      let a' = f a (B.read leaf.b.s i) in
+      loop a' (B.next leaf.b.s i) in
+    loop a leaf.i
+
+  let rec fold t a f = 
+    match t with
+      Empty -> a
+    | Leaf leaf -> fold_leaf leaf a f
+    | Concat node ->
+	let a' = fold node.left a f in
+	fold node.right a' f
+
+  let rec compare_iterator it1 it2 =
+    let u1 = value it1 in
+    let u2 = value it2 in
+    let sgn = UChar.compare u1 u2 in
+    if sgn <> 0 then sgn else
+    match next it1, next it2 with
+      None, None -> 0
+    | None, _ -> -1
+    | _, None -> 1
+    | Some it1, Some i2 -> compare_iterator it1 it2
+
+  let compare t1 t2 = compare_iterator (first t1) (first t2)
+
+  let rec string_of_aux b = function
+      Empty -> ()
+    | Leaf leaf ->
+	B.add_substring b leaf.b.s leaf.i leaf.j
+    | Concat node ->
+	string_of_aux b node.left;
+	string_of_aux b node.right
+
+  let string_of t =
+    let b = Buffer.create 0 in
+    string_of_aux b t;
+    Buffer.contents b
+    
 end
 
 (* 

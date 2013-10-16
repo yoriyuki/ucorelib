@@ -339,9 +339,11 @@ module Text' : sig
 
   (** Returns the underlining text of the give iterator. *)
   val base : iterator -> t
+  (** Returns the position of the iterator *)
+  val pos : iterator -> int    
 
   (** Zipper like operations. *)
-  (** [insert i t] inserts [t] inyo the right of [i]. *)
+  (** [insert i t] inserts [t] into the right of [i]. *)
   val insert : iterator -> t -> iterator 
   (** [delete_left i] deletes the left side of [i].  *)
   val delete_left : iterator -> iterator
@@ -349,10 +351,12 @@ module Text' : sig
   val delete_right : iterator -> iterator
   (** [sub i n] creates the iterator which runs over substring which
   begins position [i] to [n]-th character from [i].*)
-  val sub : iterator -> int -> iterator
+  val sub : iterator -> int -> iterator option
+  (** Raise invalid_arg "iterator out of bound".*)
+  val sub_exn : iterator -> int -> iterator
 
   (** Fold.*)
-  val fold : t -> init:'a -> f:('a -> uchar -> 'a) -> t -> 'a
+  val fold : t -> 'a -> ('a -> uchar -> 'a) -> 'a
 end
 
 (* Rope: a simple implementation of ropes as described in
