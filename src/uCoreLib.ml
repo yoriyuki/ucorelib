@@ -461,7 +461,7 @@ module BaseString : BaseStringType = struct
   let append = (^)
   let create = String.create
   let end_pos s = String.length s
-  let of_string s = if is_valid s then None else Some (String.copy s)
+  let of_string s = if is_valid s then Some (String.copy s) else None 
   let of_string_unsafe s = s
   let of_ascii s = try Some (UTF8.of_ascii s) with Malformed_code -> None
   let equal_index s i j = i = j
