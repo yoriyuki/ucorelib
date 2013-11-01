@@ -537,7 +537,7 @@ module Text' = struct
   let int_max (x:int) (y:int) = if x < y then y else x
   let int_min (x:int) (y:int) = if x < y then x else y
 
-  type base_string = {s : B.t; mutable unused : B.index} 
+  type base_string = {mutable s : B.t; mutable unused : B.index} 
 	
   type t = 
       Empty
@@ -659,23 +659,23 @@ module Text' = struct
   let leaf_append leaf_l leaf_r =
     let size_l = B.size leaf_l.b.s leaf_l.i leaf_l.j in
     let size_r = B.size leaf_r.b.s leaf_r.i leaf_r.j in
-    if size_l + size_r <= leaf_size then
-      let s =
-	if size_l + size_r <= B.length leaf_l.b.s && 
-	  is_full_tail leaf_l 
-	then begin
-	  B.blit leaf_r.b.s leaf_r.i leaf_r.j leaf_l.b.s leaf_l.b.unused;
-	  leaf_l.b.s;
-	end else
-	  let s = B.create leaf_size in
-	  B.blit leaf_l.b.s leaf_l.i leaf_l.j s (B.first s);
-	  B.blit leaf_r.b.s leaf_r.i leaf_r.j s (B.move_by_bytes s (B.first s) size_l);
-	  s in
+    if size_l + size_r <= leaf_size then begin
+      if size_l + size_r <= 
+	B.size leaf_l.b.s (B.first leaf_l.b.s) (B.end_pos leaf_l.b.s)
+	  && is_full_tail leaf_l 
+      then begin
+	B.blit leaf_r.b.s leaf_r.i leaf_r.j leaf_l.b.s leaf_l.b.unused;
+      end else begin
+	let s = B.create leaf_size in
+	B.blit leaf_l.b.s leaf_l.i leaf_l.j s (B.first s);
+	B.blit leaf_r.b.s leaf_r.i leaf_r.j s (B.move_by_bytes s (B.first s) size_l);
+	leaf_l.b.s <- s;
+      end;
       leaf_l.b.unused <- B.move_by_bytes leaf_l.b.s leaf_l.b.unused size_r;
       let leaf = {leaf_l with j = leaf_l.b.unused;
 		  len = leaf_l.len + leaf_r.len} in
       Leaf leaf
-    else
+    end else
       make_concat (Leaf leaf_l) (Leaf leaf_r) (* height = 1 *)
 	
   let concat_leaf l leaf_r = 
@@ -690,7 +690,7 @@ module Text' = struct
 	      
   let append l = function
       Empty -> l
-    | Leaf leaf_r as r -> concat_leaf l leaf_r
+    | Leaf leaf_r -> concat_leaf l leaf_r
     | Concat node as r ->
 	match node.left with
 	  Leaf leaf_r ->
@@ -710,7 +710,7 @@ module Text' = struct
     Leaf {b = b; i = (B.first s); j = i; len = 1}
 
   let leaf_append_uchar leaf u =
-    if is_full_tail leaf then
+    if is_full_tail leaf then begin
       let k = B.write leaf.b.s leaf.j u in
       if B.equal_index leaf.b.s k leaf.j then
 	make_concat (Leaf leaf) (new_block_uchar u)
@@ -719,7 +719,7 @@ module Text' = struct
 	let leaf = {leaf with j = k; len = leaf.len + 1} in
 	Leaf leaf
       end
-    else
+    end else
       make_concat (Leaf leaf) (new_block_uchar u)
 	
   let leaf_of_uchar u = 
@@ -736,8 +736,10 @@ module Text' = struct
     | Concat node ->
 	match node.right with
 	  Leaf leaf_l ->
-	    Concat {node with right = leaf_append_uchar leaf_l u}
-	| _ -> bal_if_needed l (Leaf (leaf_of_uchar u))
+	    Concat {node with 
+		    right = leaf_append_uchar leaf_l u;
+		    right_length = node.right_length + 1}
+	| _ -> bal_if_needed l (new_block_uchar u)
 
   let init len f =
     if len < 0 then failwith "Text.init: The length is minus" else
