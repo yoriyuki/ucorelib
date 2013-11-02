@@ -301,8 +301,8 @@ module Text' : sig
 
   (** The head of the text *)
   val first : t -> iterator
-  (** Points the end of the text *)
-  val end_pos : t -> iterator
+  (** Points the last element of the text *)
+  val last : t -> iterator
   (** [nth t i] return the iterator which points the begininng of
   [i+1]-th character of [t]. *)
   val nth : t -> int -> iterator option

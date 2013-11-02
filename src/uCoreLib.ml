@@ -818,7 +818,7 @@ module Text' = struct
 
   let first t =
     let p, leaf = first_leaf t in
-    {path = p; leaf = leaf; index = B.first leaf.b.s}
+    {path = p; leaf = leaf; index = leaf.i}
 
   let rec end_leaf_sub path = function
       Empty -> (Top, empty_leaf)
@@ -828,9 +828,9 @@ module Text' = struct
 	    
   let end_leaf = end_leaf_sub Top
 
-  let end_pos t =
+  let last t =
     let p, leaf = end_leaf t in
-    {path = p; leaf = leaf; index = B.end_pos leaf.b.s}
+    {path = p; leaf = leaf; index = B.prev leaf.b.s leaf.j}
 
   let rec nth_aux p t n =
     match t with
@@ -1034,7 +1034,7 @@ module Text' = struct
 		len = B.distance it.leaf.b.s it.leaf.i it.index} in
     let it = {it with path = p; leaf = leaf} in
     let b = base it in
-    end_pos b
+    last b
 
   let sub it len =
     let it = delete_left it in
