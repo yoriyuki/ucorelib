@@ -872,8 +872,8 @@ module Text' = struct
 	next_leaf p
 
   let next it =
-    if not (B.equal_index it.leaf.b.s it.index it.leaf.j) then 
-      let i = B.next it.leaf.b.s it.index in
+    let i = B.next it.leaf.b.s it.index in
+    if not (B.equal_index it.leaf.b.s i it.leaf.j) then 
       Some {it with index = i} 
     else match next_leaf it.path with 
       None -> None
@@ -881,8 +881,8 @@ module Text' = struct
 	Some {path = path; leaf = leaf; index = leaf.i}
 
   let next_exn it =
-    if not (B.equal_index it.leaf.b.s it.index it.leaf.j) then 
-      let i = B.next it.leaf.b.s it.index in
+    let i = B.next it.leaf.b.s it.index in
+    if not (B.equal_index it.leaf.b.s i it.leaf.j) then 
       {it with index = i} 
     else match next_leaf it.path with 
       None -> invalid_arg "index out of bounds"
