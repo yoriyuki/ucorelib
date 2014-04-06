@@ -410,7 +410,7 @@ end
 
 (* Interface to String used for Rope implementation *)
 module type BaseStringType = sig
-  type t
+  type t = string
 
   val empty : t
   (* [create n] creates [n]-bytes base string *)
@@ -466,9 +466,15 @@ module BaseString : BaseStringType = struct
   let of_ascii s = try Some (UTF8.of_ascii s) with Malformed_code -> None
   let equal_index s i j = i = j
   let size s i j = j - i
-  let blit s1 i1 i2 s2 j = String.blit s1 i1 s2 j (i2 - i1)
+
+  let blit s1 i1 i2 s2 j = 
+    let endpos = next s1 i2 in
+    String.blit s1 i1 s2 j (endpos - i1)
+
   let move_by_bytes s i x = i + x
-  let add_substring b s i j = Buffer.add_substring b s i (j - i)
+  let add_substring b s i j = 
+    let endpos = next s j in
+    Buffer.add_substring b s i (endpos - i)
  
   let write s i u =
     let masq = 0b111111 in
@@ -545,7 +551,8 @@ module Text' = struct
     | Leaf of leaf
   and node = {left : t; left_length : int; right : t; right_length : int; height : int}
   and leaf = {b : base_string; 
-	      i : B.index;  (*..............:::::::::::::::::::::.... *)
+	      (* i points the first character, j points the start of last character*)
+	      i : B.index;  (*..............::::::::::::::::::::::... *)
 	      j : B.index;  (*              ^                    ^    *)
 	      len : int}    (*              i                    j    *)
 
@@ -654,14 +661,16 @@ module Text' = struct
   let bal_if_needed l r =
     let r = make_concat l r in balance r
       
-  let is_full_tail leaf = B.equal_index leaf.b.s leaf.j leaf.b.unused
+  let is_full_tail leaf = 
+    let tail = B.next leaf.b.s leaf.j in
+    B.equal_index leaf.b.s tail leaf.b.unused
 
   let leaf_append leaf_l leaf_r =
-    let size_l = B.size leaf_l.b.s leaf_l.i leaf_l.j in
-    let size_r = B.size leaf_r.b.s leaf_r.i leaf_r.j in
+    let size_l = B.size leaf_l.b.s leaf_l.i (B.next leaf_l.b.s leaf_l.j) in
+    let size_r = B.size leaf_r.b.s leaf_r.i (B.next leaf_r.b.s leaf_r.j) in
     if size_l + size_r <= leaf_size then begin
       if size_l + size_r <= 
-	B.size leaf_l.b.s (B.first leaf_l.b.s) (B.end_pos leaf_l.b.s)
+	B.size leaf_l.b.s leaf_l.i (B.end_pos leaf_l.b.s)
 	  && is_full_tail leaf_l 
       then begin
 	B.blit leaf_r.b.s leaf_r.i leaf_r.j leaf_l.b.s leaf_l.b.unused;
@@ -672,7 +681,7 @@ module Text' = struct
 	leaf_l.b.s <- s;
       end;
       leaf_l.b.unused <- B.move_by_bytes leaf_l.b.s leaf_l.b.unused size_r;
-      let leaf = {leaf_l with j = leaf_l.b.unused;
+      let leaf = {leaf_l with j = B.prev leaf_l.b.s leaf_l.b.unused;
 		  len = leaf_l.len + leaf_r.len} in
       Leaf leaf
     end else
@@ -705,27 +714,30 @@ module Text' = struct
 
   let new_block_uchar u = 
     let s = B.create leaf_size in
-    let i = B.write s (B.first s) u in
-    let b = {s = s; unused = i} in
-    Leaf {b = b; i = (B.first s); j = i; len = 1}
+    let k = B.write s (B.first s) u in
+    let b = {s = s; unused = k} in
+    Leaf {b = b; i = (B.first s); j = (B.first s); len = 1}
+
+  let is_full leaf =
+    B.compare_index leaf.b.s 
+      (B.next leaf.b.s leaf.j)
+      (B.end_pos leaf.b.s) >= 0
 
   let leaf_append_uchar leaf u =
-    if is_full_tail leaf then begin
-      let k = B.write leaf.b.s leaf.j u in
-      if B.equal_index leaf.b.s k leaf.j then
-	make_concat (Leaf leaf) (new_block_uchar u)
-      else begin
-	leaf.b.unused <- k;
-	let leaf = {leaf with j = k; len = leaf.len + 1} in
-	Leaf leaf
-      end
-    end else
+    if is_full leaf then
+      make_concat (Leaf leaf) (new_block_uchar u) 
+    else if is_full_tail leaf then
+      let k = B.write leaf.b.s leaf.b.unused u in
+      let leaf = {leaf with j = leaf.b.unused; len = leaf.len + 1} in
+      leaf.b.unused <- k;
+      Leaf leaf
+    else
       make_concat (Leaf leaf) (new_block_uchar u)
 	
   let leaf_of_uchar u = 
     let s = B.of_string_unsafe (UTF8.make 1 u) in
     let b = {s = s; unused = B.end_pos s} in
-    {b = b; i = B.first b.s; j = B.end_pos b.s; len = 1}
+    {b = b; i = B.first b.s; j = B.first b.s; len = 1}
 
   let of_uchar u = Leaf (leaf_of_uchar u)
       
@@ -745,14 +757,15 @@ module Text' = struct
     if len < 0 then failwith "Text.init: The length is minus" else
     let s = B.init len f in
     let b = {s = s; unused = B.end_pos s} in
-    Leaf {b = b; i = B.first s; j = B.end_pos s; len = len}
+    Leaf {b = b; i = B.first s; j = B.prev s (B.end_pos s); len = len}
       
   let of_string s =
     match B.of_string s with
       None -> None
     | Some s ->
 	let b = {s = s; unused = B.end_pos s} in
-	Some (Leaf {b = b; i = B.first b.s; j = B.end_pos b.s; len = B.length s})
+	Some (Leaf {b = b; i = B.first b.s; j = B.prev s (B.end_pos s);
+		    len = B.length s})
 
   let of_string_exn s = 
     match of_string s with
@@ -764,7 +777,9 @@ module Text' = struct
       None -> None
     | Some s ->
 	let b = {s = s; unused = B.end_pos s} in
-	Some (Leaf {b = b; i = B.first b.s; j = B.end_pos b.s; len = B.length s})
+	Some (Leaf {b = b; i = B.first b.s; 
+		    j = B.move_by_bytes b.s (B.end_pos b.s) (-1); 
+		    len = B.length s})
 
   let of_ascii_exn s = 
     match of_string s with
@@ -806,7 +821,7 @@ module Text' = struct
 
   let empty_leaf = 
     let base = {s = B.empty; unused = B.end_pos B.empty} in
-    {b = base; i = B.first B.empty; j = B.end_pos B.empty; len = 0} 
+    {b = base; i = B.first B.empty; j = B.prev B.empty (B.first B.empty); len = 0} 
 
   let rec first_leaf_sub path = function
       Empty -> (Top, empty_leaf)
@@ -830,7 +845,7 @@ module Text' = struct
 
   let last t =
     let p, leaf = end_leaf t in
-    {path = p; leaf = leaf; index = B.prev leaf.b.s leaf.j}
+    {path = p; leaf = leaf; index = leaf.j}
 
   let rec nth_aux p t n =
     match t with
@@ -873,7 +888,7 @@ module Text' = struct
 
   let next it =
     let i = B.next it.leaf.b.s it.index in
-    if not (B.equal_index it.leaf.b.s i it.leaf.j) then 
+    if not (B.compare_index it.leaf.b.s i it.leaf.j > 0) then 
       Some {it with index = i} 
     else match next_leaf it.path with 
       None -> None
@@ -882,7 +897,7 @@ module Text' = struct
 
   let next_exn it =
     let i = B.next it.leaf.b.s it.index in
-    if not (B.equal_index it.leaf.b.s i it.leaf.j) then 
+    if not (B.compare_index it.leaf.b.s i it.leaf.j > 0) then 
       {it with index = i} 
     else match next_leaf it.path with 
       None -> invalid_arg "index out of bounds"
@@ -903,7 +918,7 @@ module Text' = struct
     else match prev_leaf it.path with 
       None -> None
     | Some (path, leaf) -> 
-	Some {path = path; leaf = leaf; index = B.prev leaf.b.s leaf.j}
+	Some {path = path; leaf = leaf; index = leaf.j}
 
   let prev_exn it =
     if not (B.equal_index it.leaf.b.s it.index it.leaf.i) then 
@@ -912,7 +927,7 @@ module Text' = struct
     else match prev_leaf it.path with 
       None -> invalid_arg "index out of	bounds"
     | Some (path, leaf) -> 
-	{path = path; leaf = leaf; index = B.prev leaf.b.s leaf.j}
+	{path = path; leaf = leaf; index = leaf.j}
 
   let rec base_aux path sub =
     match path with
@@ -934,7 +949,7 @@ module Text' = struct
   let move_ahead_leaf it n =
     let rec loop i n =
       if B.compare_index it.leaf.b.s i it.leaf.j > 0 then 
-	`Out_of_range ({it with index = it.leaf.j}, n) 
+	`Out_of_range ({it with index = i}, n) 
       else if n <= 0 then `Success {it with index = i} else 
       loop (B.next it.leaf.b.s i) (n - 1) in
     loop it.index n
@@ -945,9 +960,9 @@ module Text' = struct
     | Leaf leaf -> 
 	let it = 
 	  if it.leaf == leaf then it else
-	  {path = path; leaf = leaf; index = leaf.i} in
+	  {it with index = leaf.i} in
        	(match move_ahead_leaf it n with
-	  `Success it as ret -> ret
+	  `Success it as ret ->  ret
 	| `Out_of_range (it, n) -> 
 	    (match path with
 	      Top -> `Out_of_range (it, n)
@@ -963,11 +978,16 @@ module Text' = struct
 	  move_ahead (Right (node.left, path)) node.right it (n - node.left_length)
 
   let move_behind_leaf it n =
-    let rec loop i n =
-      if B.compare_index it.leaf.b.s i it.leaf.i < 0 then 
-	`Out_of_range ({it with index = it.leaf.i}, n) 
-      else if n <= 0 then `Success {it with index = i} else 
-      loop (B.prev it.leaf.b.s i) (n-1) in
+    if it.leaf.len < n then 
+      let i = B.prev it.leaf.b.s (B.first it.leaf.b.s) in
+      `Out_of_range ({it with index = i}, n - it.leaf.len) 
+    else
+      let rec loop i n =
+	if n <= 0 then `Success {it with index = i} else 
+	if B.compare_index it.leaf.b.s i it.leaf.i < 0 then 
+	  `Out_of_range ({it with index = i}, n) 
+	else 
+	  loop (B.prev it.leaf.b.s i) (n-1) in
     loop it.index n
         
   let rec move_behind path sub it n =
@@ -988,10 +1008,10 @@ module Text' = struct
 		let node = make_concat sub t in
 		move_behind p node it n))
     | Concat node ->
-	if node.right_length >= n then 
+	if node.right_length > n then 
 	  move_behind (Right (node.left, path)) node.right it n
 	else
-	  move_ahead (Right (node.right, path)) node.left it (n - node.left_length)
+	  move_behind (Right (node.right, path)) node.left it (n - node.right_length)
 
   let move it n =
     if n > 0 then move_ahead it.path (Leaf it.leaf) it n else
@@ -1017,7 +1037,7 @@ module Text' = struct
   let delete_left it =
     let p, _ = delete_left_pos it.path (Leaf it.leaf) in
     let leaf = {it.leaf with i = it.index; 
-		len = B.distance it.leaf.b.s it.index it.leaf.j} in
+		len = 1 + B.distance it.leaf.b.s it.index it.leaf.j} in
     let it = {it with path = p; leaf = leaf} in
     let b = base it in
     first b
@@ -1031,7 +1051,7 @@ module Text' = struct
   let delete_right it =
     let p, _ = delete_right_pos it.path (Leaf it.leaf) in
     let leaf = {it.leaf with j = it.index; 
-		len = B.distance it.leaf.b.s it.leaf.i it.index} in
+		len = 1 + B.distance it.leaf.b.s it.leaf.i it.index} in
     let it = {it with path = p; leaf = leaf} in
     let b = base it in
     last b
@@ -1061,7 +1081,7 @@ module Text' = struct
 
   let fold_leaf leaf a f =
     let rec loop a i =
-      if B.compare_index leaf.b.s i leaf.j >= 0 then a else
+      if B.compare_index leaf.b.s i leaf.j > 0 then a else
       let a' = f a (B.read leaf.b.s i) in
       loop a' (B.next leaf.b.s i) in
     loop a leaf.i
