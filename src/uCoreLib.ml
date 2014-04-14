@@ -1043,7 +1043,7 @@ module Text = struct
       None, None -> 0
     | None, _ -> -1
     | _, None -> 1
-    | Some it1, Some i2 -> compare_iterator it1 it2
+    | Some it1, Some it2 -> compare_iterator it1 it2
 
   let compare t1 t2 = compare_iterator (first t1) (first t2)
 
