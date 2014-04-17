@@ -422,7 +422,7 @@ module type BaseStringType = sig
   val length : t -> int
   val compare : t -> t -> int
 
-  type index 
+  type index = int
   val first : t -> index
   val end_pos : t -> index
   val out_of_range : t -> index -> bool
@@ -668,20 +668,28 @@ module Text = struct
     let size_l = B.size leaf_l.b.s leaf_l.i (B.next leaf_l.b.s leaf_l.j) in
     let size_r = B.size leaf_r.b.s leaf_r.i (B.next leaf_r.b.s leaf_r.j) in
     if size_l + size_r <= leaf_size then begin
-      if size_l + size_r <= 
-	B.size leaf_l.b.s leaf_l.i (B.end_pos leaf_l.b.s)
-	  && is_full_tail leaf_l 
-      then begin
-	B.blit leaf_r.b.s leaf_r.i leaf_r.j leaf_l.b.s leaf_l.b.unused;
-      end else begin
-	let s = B.create leaf_size in
-	B.blit leaf_l.b.s leaf_l.i leaf_l.j s (B.first s);
-	B.blit leaf_r.b.s leaf_r.i leaf_r.j s (B.move_by_bytes s (B.first s) size_l);
-	leaf_l.b.s <- s;
-      end;
-      leaf_l.b.unused <- B.move_by_bytes leaf_l.b.s leaf_l.b.unused size_r;
-      let leaf = {leaf_l with j = B.prev leaf_l.b.s leaf_l.b.unused;
-		  len = leaf_l.len + leaf_r.len} in
+      let leaf =
+	if size_l + size_r <= 
+	  B.size leaf_l.b.s leaf_l.i (B.end_pos leaf_l.b.s)
+	    && is_full_tail leaf_l 
+	then begin
+	  B.blit leaf_r.b.s leaf_r.i leaf_r.j leaf_l.b.s leaf_l.b.unused;
+	  let b = {leaf_l.b with unused = leaf_l.b.unused + size_r} in
+	  {b = b; 
+	   i = leaf_l.i;
+	   j = B.prev b.s b.unused;
+	   len = leaf_l.len + leaf_r.len} 
+	end else begin
+	  let s = B.create leaf_size in
+	  B.blit leaf_l.b.s leaf_l.i leaf_l.j s (B.first s);
+	  B.blit leaf_r.b.s leaf_r.i leaf_r.j s 
+	    (B.move_by_bytes s (B.first s) size_l);
+	  let b = {s = s; unused = size_l + size_r} in
+	  {b = b; 
+	   i = B.first s; 
+	   j = B.prev s (B.move_by_bytes s (B.first s) (size_l + size_r));
+	   len = leaf_l.len + leaf_r.len}
+	end in
       Leaf leaf
     end else
       make_concat (Leaf leaf_l) (Leaf leaf_r) (* height = 1 *)
@@ -981,17 +989,18 @@ module Text = struct
 	| Some it ->
 	    Some (delete_right it)
 
-
   let sub_exn t ~pos ~len =
     match sub t ~pos ~len with
       None -> invalid_arg "iterator out of bound"
     | Some t -> t
 
   let insert t pos text =
+    if pos = 0 then Some (append text t) else
+    if pos = length t then Some (append t text) else
     match nth t pos with
       None -> None
     | Some it ->
-	let left = delete_right it in 
+	let left = delete_right (prev_exn it) in 
 	let right = delete_left it in
 	Some (append (append left text) right)
 
