@@ -180,10 +180,7 @@ module Text : sig
   val insert_exn : t -> int -> t -> t
   (** [delete t pos len] deletes length [len] text from [pos]-th
   character in [t] *)
-  val delete : t -> pos:int -> len:int -> t option
-  (** Raise invalid_arg "index out of bound" if [pos]-[pos+len-1] is not
-  contained in [t] *)
-  val delete_exn : t -> pos:int -> len:int -> t
+  val delete : t -> pos:int -> len:int -> t
   (** [sub t pos len] obtains the substring of [t] which starts from
   [pos]-th character and has [len] characters *)
   val sub : t -> pos:int -> len:int -> t option

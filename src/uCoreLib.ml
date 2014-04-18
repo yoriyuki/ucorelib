@@ -1010,17 +1010,15 @@ module Text = struct
     | Some t -> t
 
   let delete t ~pos ~len =
-    match nth t pos, nth t (pos + len -1) with
-      None, _ | _, None -> None
+    let pos, len = if len >= 0 then pos, len else pos + len + 1, -len in
+    match nth t (pos - 1), nth t (pos + len) with
+      None, None -> Empty
+    | None, Some it -> delete_left it
+    | Some it, None -> delete_right it
     | Some it1, Some it2 ->
 	let left = delete_right it1 in 
 	let right = delete_left it2 in
-	Some (append left right)
-
-  let delete_exn t ~pos ~len =
-    match delete t ~pos ~len with
-      None -> invalid_arg "index out of bound"
-    | Some t -> t
+	append left right
 
   let value it = B.read it.leaf.b.s it.index
 
