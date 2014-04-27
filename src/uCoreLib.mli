@@ -183,10 +183,7 @@ module Text : sig
   val delete : t -> pos:int -> len:int -> t
   (** [sub t pos len] obtains the substring of [t] which starts from
   [pos]-th character and has [len] characters *)
-  val sub : t -> pos:int -> len:int -> t option
-  (** Raise invalid_arg "index out of bound" if [pos]-[pos+len-1] is not
-  contained in [t] *)
-  val sub_exn : t -> pos:int -> len:int -> t
+  val sub : t -> pos:int -> len:int -> t
 
   (** Fold*)
   val fold : t -> 'a -> ('a -> uchar -> 'a) -> 'a

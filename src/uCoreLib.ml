@@ -980,19 +980,21 @@ module Text = struct
     base it
 
   let sub t ~pos ~len =
+    if len = 0 then Empty else
+    let pos, len =
+      if len >= 0 then pos, len else
+      pos + len + 1, -len in
+    let pos, len =
+      if pos >= 0 then pos, len else
+      0, pos + len in
     match nth t pos with
-      None -> None
+      None -> Empty
     | Some it ->
 	let s = delete_left it in
-	match nth s len with
-	  None -> None
+	match nth s (len - 1) with
+	  None -> s
 	| Some it ->
-	    Some (delete_right it)
-
-  let sub_exn t ~pos ~len =
-    match sub t ~pos ~len with
-      None -> invalid_arg "iterator out of bound"
-    | Some t -> t
+	    delete_right it
 
   let insert t pos text =
     if pos = 0 then Some (append text t) else
