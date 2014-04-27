@@ -185,7 +185,7 @@ module Text : sig
   [pos]-th character and has [len] characters *)
   val sub : t -> pos:int -> len:int -> t
 
-  (** Fold*)
+  (** Fold *)
   val fold : t -> 'a -> ('a -> uchar -> 'a) -> 'a
 end
 
