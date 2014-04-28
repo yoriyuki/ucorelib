@@ -894,22 +894,19 @@ module Text = struct
 	next_leaf p
 
   let next it =
-    let i = B.next it.leaf.b.s it.index in
-    if not (B.compare_index it.leaf.b.s i it.leaf.j > 0) then 
+    if (B.compare_index it.leaf.b.s it.index it.leaf.j >= 0) then 
+      match next_leaf it.path with 
+	None -> None
+      | Some (path, leaf) -> 
+	  Some {path = path; leaf = leaf; index = leaf.i}
+    else
+      let i = B.next it.leaf.b.s it.index in
       Some {it with index = i} 
-    else match next_leaf it.path with 
-      None -> None
-    | Some (path, leaf) -> 
-	Some {path = path; leaf = leaf; index = leaf.i}
 
   let next_exn it =
-    let i = B.next it.leaf.b.s it.index in
-    if not (B.compare_index it.leaf.b.s i it.leaf.j > 0) then 
-      {it with index = i} 
-    else match next_leaf it.path with 
+    match next it with
       None -> invalid_arg "index out of bounds"
-    | Some (path, leaf) -> 
-        {path = path; leaf = leaf; index = leaf.i}
+    | Some it -> it
 
   let rec prev_leaf = function
       Top -> None
