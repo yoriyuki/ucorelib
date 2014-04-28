@@ -471,6 +471,7 @@ module BaseString : BaseStringType = struct
     String.blit s1 i1 s2 j (endpos - i1)
 
   let move_by_bytes s i x = i + x
+
   let add_substring b s i j = 
     let endpos = next s j in
     Buffer.add_substring b s i (endpos - i)
@@ -1070,33 +1071,6 @@ module Text = struct
     
 end
 
-(* 
- * Rope: Rope: an implementation of the data structure described in
- *   
- * Boehm, H., Atkinson, R., and Plass, M. 1995. Ropes: an alternative to
- * strings. Softw. Pract. Exper. 25, 12 (Dec. 1995), 1315-1330.
- * 
- * Motivated by Luca de Alfaro's extensible array implementation Vec.
- * 
- * Copyright (C) 2007 Mauricio Fernandez <mfp@acm.org>
- * Copyright (C) 2008 Edgar Friendly <thelema314@gmail.com>
- * Copyright (C) 2008 David Teller, LIFO, Universite d'Orleans
- *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version,
- * with the special exception on linking described in file LICENSE.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
- *)
 
 (** Aliase for Text.t *)
 type text = Text.t
