@@ -181,6 +181,7 @@ module UTF8 = struct
     UChar.unsafe_chr n'
       
   let next s i = 
+    if i < 0 then 0 else
     let n = Char.code s.[i] in
     if n < 0x80 then i + 1 else
     if n <= 0xdf then i + 2
@@ -445,6 +446,7 @@ module type BaseStringType = sig
   val add_substring : Buffer.t -> t -> index -> index -> unit
 
   val read : t -> index -> uchar
+  (* If the buffer is too small, [write i u] returns [i]. *)
   val write : t -> index -> uchar -> index
 end
 
@@ -458,7 +460,7 @@ module BaseString : BaseStringType = struct
   let copy = String.copy
   let read = look
   let append = (^)
-  let create = String.create
+  let create len = String.make len '\255'
   let end_pos s = String.length s
   let of_string s = if is_valid s then Some (String.copy s) else None 
   let of_string_unsafe s = s
@@ -475,7 +477,7 @@ module BaseString : BaseStringType = struct
   let add_substring b s i j = 
     let endpos = next s j in
     Buffer.add_substring b s i (endpos - i)
- 
+
   let write s i u =
     let masq = 0b111111 in
     let k = UChar.code u in
@@ -724,7 +726,7 @@ module Text = struct
     let s = B.create leaf_size in
     let k = B.write s (B.first s) u in
     let b = {s = s; unused = k} in
-    Leaf {b = b; i = (B.first s); j = (B.first s); len = 1}
+    Leaf {b = b; i = B.first s; j = B.first s; len = 1}
 
   let is_full leaf =
     B.compare_index leaf.b.s 
@@ -732,13 +734,14 @@ module Text = struct
       (B.end_pos leaf.b.s) >= 0
 
   let leaf_append_uchar leaf u =
-    if is_full leaf then
-      make_concat (Leaf leaf) (new_block_uchar u) 
-    else if is_full_tail leaf then
+    if not (is_full leaf) && is_full_tail leaf then
       let k = B.write leaf.b.s leaf.b.unused u in
-      let leaf = {leaf with j = leaf.b.unused; len = leaf.len + 1} in
-      leaf.b.unused <- k;
-      Leaf leaf
+      if B.equal_index leaf.b.s k leaf.b.unused then
+	make_concat (Leaf leaf) (new_block_uchar u)
+      else
+	let leaf = {leaf with j = leaf.b.unused; len = leaf.len + 1} in
+	leaf.b.unused <- k;
+	Leaf leaf
     else
       make_concat (Leaf leaf) (new_block_uchar u)
 	
@@ -751,7 +754,7 @@ module Text = struct
       
   let append_uchar l u = 
     match l with
-    | Empty -> Leaf (leaf_of_uchar u)
+    | Empty -> new_block_uchar u
     | Leaf leaf_l -> leaf_append_uchar leaf_l u
     | Concat node ->
 	match node.right with
