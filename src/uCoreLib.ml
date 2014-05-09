@@ -1,6 +1,6 @@
-(** ulib : a feather weight Unicode library for OCaml *)
+(** ucorelib : core Unicode library for OCaml *)
 
-(* Copyright (C) 2011 Yamagata Yoriyuki. *)
+(* Copyright (C) 2011, 2013, 2014 Yamagata Yoriyuki. *)
 
 (* This library is free software; you can redistribute it and/or *)
 (* modify it under the terms of the GNU Lesser General Public License *)
@@ -33,7 +33,6 @@
 
 (* You can contact the authour by sending email to *)
 (* yoriyuki.y@gmail.com *)
-
 
 (** Unicode (ISO-UCS) characters.
 
@@ -73,7 +72,7 @@
 
 (* You can contact the authour by sending email to *)
 (* yoriyuki.y@gmail.com *)
-	
+
 exception Out_of_range
 exception Malformed_code
 
@@ -182,6 +181,7 @@ module UTF8 = struct
     UChar.unsafe_chr n'
       
   let next s i = 
+    if i < 0 then 0 else
     let n = Char.code s.[i] in
     if n < 0x80 then i + 1 else
     if n <= 0xdf then i + 2
@@ -250,18 +250,20 @@ module UTF8 = struct
 
   let of_string_unsafe s = s 
   let to_string_unsafe s = s
-      
-  let rec length_aux s c i =
-    if i >= String.length s then c else
+
+  let rec distance_aux s i j c =
+    if i >= j then c else
     let n = Char.code (String.unsafe_get s i) in
     let k =
       if n < 0x80 then 1 else
       if n < 0xe0 then 2 else
       if n < 0xf0 then 3 else 4
     in
-    length_aux s (c + 1) (i + k)
-      
-  let length s = length_aux s 0 0
+    distance_aux s (i + k) j (c + 1)
+
+  let distance s i j = distance_aux s i j 0
+
+  let length s = distance s 0 (String.length s)
       
   let rec iter_aux proc s i =
     if i >= String.length s then () else
@@ -406,6 +408,107 @@ module UTF8 = struct
 
 end
 
+(* Interface to String used for Rope implementation *)
+module type BaseStringType = sig
+  type t = string
+
+  val empty : t
+  (* [create n] creates [n]-bytes base string *)
+  val create : int -> t
+  val init : int -> (int -> uchar) -> t
+  val of_string : string -> t option
+  val of_string_unsafe : string -> t
+  val of_ascii : string -> t option
+
+  val length : t -> int
+  val compare : t -> t -> int
+
+  type index = int
+  val first : t -> index
+  val end_pos : t -> index
+  val out_of_range : t -> index -> bool
+  val next : t -> index -> index
+  val prev : t -> index -> index
+  val move : t -> index -> int -> index
+  val equal_index : t -> index -> index -> bool
+  val compare_index : t -> index -> index -> int
+  val distance : t -> index -> index -> int
+
+  (* Low level functions *)
+  (* bytes of substring *)
+  val size : t -> index -> index -> int
+  (* [blit s1 i1 i2 s2 j] copies the contents of [s1] from [i1] to
+  [i2] into the location [j] of [s2]. *)
+  val blit : t -> index -> index -> t -> index -> unit
+  (* [move_by_bytes s i x] moves index [i] by [x] bytes.*)
+  val move_by_bytes : t -> index -> int -> index
+
+  val add_substring : Buffer.t -> t -> index -> index -> unit
+
+  val read : t -> index -> uchar
+  (* If the buffer is too small, [write i u] returns [i]. *)
+  val write : t -> index -> uchar -> index
+end
+
+module BaseString : BaseStringType = struct
+  include UTF8
+
+  let empty = ""
+
+  let is_valid s = try validate s; true with Malformed_code -> false
+
+  let copy = String.copy
+  let read = look
+  let append = (^)
+  let create len = String.make len '\255'
+  let end_pos s = String.length s
+  let of_string s = if is_valid s then Some (String.copy s) else None 
+  let of_string_unsafe s = s
+  let of_ascii s = try Some (UTF8.of_ascii s) with Malformed_code -> None
+  let equal_index s i j = i = j
+  let size s i j = j - i
+
+  let blit s1 i1 i2 s2 j = 
+    let endpos = next s1 i2 in
+    String.blit s1 i1 s2 j (endpos - i1)
+
+  let move_by_bytes s i x = i + x
+
+  let add_substring b s i j = 
+    let endpos = next s j in
+    Buffer.add_substring b s i (endpos - i)
+
+  let write s i u =
+    let masq = 0b111111 in
+    let k = UChar.code u in
+    if k <= 0x7f then
+      if i >= String.length s then i else begin
+	s.[i] <- Char.unsafe_chr k;
+	i + 1
+      end
+    else if k <= 0x7ff then
+      if i >= String.length s - 1 then i else begin
+	s.[i] <- Char.unsafe_chr (0xc0 lor (k lsr 6));
+	s.[i+1] <- (Char.unsafe_chr (0x80 lor (k land masq)));
+	i+2
+    end else if k <= 0xffff then
+      if i >= String.length s - 2 then i else begin
+	s.[i] <- Char.unsafe_chr (0xe0 lor (k lsr 12));
+	s.[i+1] <- Char.unsafe_chr (0x80 lor ((k lsr 6) land masq));
+	s.[i+2] <- Char.unsafe_chr (0x80 lor (k land masq));
+	i + 3
+    end else 
+      if i >= String.length s - 3 then i else
+      begin
+	s.[i] <- Char.unsafe_chr (0xf0 + (k lsr 18));
+	s.[i+1] <- Char.unsafe_chr (0x80 lor ((k lsr 12) land masq));
+	s.[i+2] <- Char.unsafe_chr (0x80 lor ((k lsr 6) land masq));
+	s.[i+3] <- Char.unsafe_chr (0x80 lor (k land masq));
+	i + 4
+      end
+end
+
+module Text = struct
 (* 
  * Rope: Rope: an implementation of the data structure described in
  *   
@@ -414,6 +517,7 @@ end
  * 
  * Motivated by Luca de Alfaro's extensible array implementation Vec.
  * 
+ * Copyright (C) 2013 Yoriyuki Yamagata <yoriyuki.y@gmail.com>
  * Copyright (C) 2007 Mauricio Fernandez <mfp@acm.org>
  * Copyright (C) 2008 Edgar Friendly <thelema314@gmail.com>
  * Copyright (C) 2008 David Teller, LIFO, Universite d'Orleans
@@ -434,864 +538,546 @@ end
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *)
 
-module Text = struct 
-  
-  (**Low-level optimization*)
+  open BatInt.Safe_int
+
+  module B = BaseString
+
   let int_max (x:int) (y:int) = if x < y then y else x
   let int_min (x:int) (y:int) = if x < y then x else y
 
-  let splice s1 off len s2 =
-    let len1 = String.length s1 and len2 = String.length s2           in
-    let off  = if off < 0 then len1 + off - 1 else off  in
-    let len  = int_min (len1 - off) len                 in
-    let out_len = len1 - len + len2                     in
-    let s = String.create out_len in
-    String.blit s1 0 s 0 off; (* s1 before splice point *)
-    String.blit s2 0 s off len2; (* s2 at splice point *)
-    String.blit s1 (off+len) s (off+len2) (len1 - (off+len)); (* s1 after off+len *)
-    s
+  type base_string = {mutable s : B.t; mutable unused : B.index} 
+	
+  type t = 
+      Empty
+    | Concat of node
+    | Leaf of leaf
+  and node = {left : t; left_length : int; right : t; right_length : int; height : int}
+  and leaf = {b : base_string; 
+	      (* i points the first character, j points the start of last character*)
+	      i : B.index;  (*..............::::::::::::::::::::::... *)
+	      j : B.index;  (*              ^                    ^    *)
+	      len : int}    (*              i                    j    *)
 
-  exception Invalid_rope
-   
-  type t =
-      Empty                             (**An empty rope*)
-    | Concat of t * int * t * int * int (**[Concat l ls r rs h] is the concatenation of
-                                           ropes [l] and [r], where [ls] is the total 
-  					 length of [l], [rs] is the length of [r]
-  					 and [h] is the height of the node in the
-  					 tree, used for rebalancing. *)
-    | Leaf of int * UTF8.t              (**[Leaf l t] is string [t] with length [l],
-  					 measured in number of Unicode characters.*)
-   
-  type forest_element = { mutable c : t; mutable len : int }
-   
-  let str_append = (^)
-  let empty_str = ""
-  let string_of_string_list l = String.concat empty_str l
-
-
-   
-  (* 48 limits max rope size to 220GB on 64 bit,
-  * ~ 700MB on 32bit (length fields overflow after that) *)
-  let max_height = 48
-   
-  (* actual size will be that plus 1 word header;
-  * the code assumes it's an even num.
-  * 256 gives up to a 50% overhead in the worst case (all leaf nodes near
-  * half-filled *)
-  let leaf_size = 256 (* utf-8 characters, not bytes *)
-  (* =end *)
-   
-  (* =begin code *)
-   
-  exception Out_of_bounds
-   
   let empty = Empty
-   
 
-
-  (* by construction, there cannot be Empty or Leaf "" leaves *)
-  let is_empty = function Empty -> true | _ -> false
-   
-  let height = function
-      Empty | Leaf _ -> 0
-    | Concat(_,_,_,_,h) -> h
-   
   let length = function
       Empty -> 0
-    | Leaf (l,_) -> l
-    | Concat(_,cl,_,cr,_) -> cl + cr
-   
+    | Concat node -> node.left_length + node.right_length
+    | Leaf leaf -> leaf.len
+	  
+  let height = function
+      Empty -> 0
+    | Concat node -> node.height
+    | Leaf _ -> 1
+
+	  (* 48 limits max rope size to 220GB on 64 bit,
+	   * ~ 700MB on 32bit (length fields overflow after that) *)
+  let max_height = 48
+      
+  let leaf_size = 256 (* bytes *)
+
   let make_concat l r =
     let hl = height l and hr = height r in
     let cl = length l and cr = length r in
-      Concat(l, cl, r, cr, if hl >= hr then hl + 1 else hr + 1)
-   
+    Concat {left = l; left_length = cl; 
+	    right = r; right_length = cr;
+	    height = max hl hr}
+
   let min_len =
     let fib_tbl = Array.make max_height 0 in
     let rec fib n = match fib_tbl.(n) with
-        0 ->
-          let last = fib (n - 1) and prev = fib (n - 2) in
-          let r = last + prev in
-          let r = if r > last then r else last in (* check overflow *)
-            fib_tbl.(n) <- r; r
-      | n -> n
+      0 ->
+        let last = fib (n - 1) and prev = fib (n - 2) in
+        let r = last + prev in
+        let r = if r > last then r else last in (* check overflow *)
+        fib_tbl.(n) <- r; r
+    | n -> n
     in
-      fib_tbl.(0) <- leaf_size + 1; fib_tbl.(1) <- 3 * leaf_size / 2 + 1;
-      Array.init max_height (fun i -> if i = 0 then 1 else fib (i - 1))
-   
+    fib_tbl.(0) <- leaf_size + 1; fib_tbl.(1) <- 3 * leaf_size / 2 + 1;
+    Array.init max_height (fun i -> if i = 0 then 1 else fib (i - 1))
+      
   let max_length = min_len.(Array.length min_len - 1)
-   
+      
+  let make_concat l r =
+    let hl = height l and hr = height r in
+    let cl = length l and cr = length r in
+    Concat {left = l; left_length = cl; right = r; right_length = cr; 
+	    height = 1 + int_max hl hr}
+
   let concat_fast l r = match l with
-      Empty -> r
-    | Leaf _ | Concat(_,_,_,_,_) ->
-        match r with
-            Empty -> l
-          | Leaf _ | Concat(_,_,_,_,_) -> make_concat l r
-   
-  (* based on Hans-J. Boehm's *)
+    Empty -> r
+  | Leaf _ | Concat _ ->
+      match r with
+        Empty -> l
+      | Leaf _ | Concat _ -> make_concat l r
+	    
+	    (* based on Hans-J. Boehm's *)
+  type forest_element = { mutable c : t; mutable rlen : int }
+
+  let not_empty = function Empty -> false | _ -> true
+
   let add_forest forest rope len =
     let i = ref 0 in
     let sum = ref empty in
-      while len > min_len.(!i+1) do
-        if forest.(!i).c <> Empty then begin
-          sum := concat_fast forest.(!i).c !sum;
-          forest.(!i).c <- Empty
-        end;
-        incr i
-      done;
-      sum := concat_fast !sum rope;
-      let sum_len = ref (length !sum) in
-        while !sum_len >= min_len.(!i) do
-          if forest.(!i).c <> Empty then begin
-            sum := concat_fast forest.(!i).c !sum;
-            sum_len := !sum_len + forest.(!i).len;
-            forest.(!i).c <- Empty;
-          end;
-          incr i
-        done;
-        decr i;
-        forest.(!i).c <- !sum;
-        forest.(!i).len <- !sum_len
-   
+    while len > min_len.(!i+1) do
+      if not_empty forest.(!i).c then begin
+        sum := concat_fast forest.(!i).c !sum;
+        forest.(!i).c <- Empty
+      end;
+      incr i
+    done;
+    sum := concat_fast !sum rope;
+    let sum_len = ref (length !sum) in
+    while !sum_len >= min_len.(!i) do
+      if not_empty forest.(!i).c then begin
+        sum := concat_fast forest.(!i).c !sum;
+        sum_len := !sum_len + forest.(!i).rlen;
+        forest.(!i).c <- Empty;
+      end;
+      incr i
+    done;
+    decr i;
+    forest.(!i).c <- !sum;
+    forest.(!i).rlen <- !sum_len
+	
   let concat_forest forest =
     Array.fold_left (fun s x -> concat_fast x.c s) Empty forest
-   
+      
   let rec balance_insert rope len forest = match rope with
-      Empty -> ()
-    | Leaf _ -> add_forest forest rope len
-    | Concat(l,cl,r,cr,h) when h >= max_height || len < min_len.(h) ->
-        balance_insert l cl forest;
-        balance_insert r cr forest
-    | x -> add_forest forest x len (* function or balanced *)
-   
+    Empty -> ()
+  | Leaf _ -> add_forest forest rope len
+  | Concat node when node.height >= max_height || len < min_len.(node.height) ->
+      balance_insert node.left node.left_length forest;
+      balance_insert node.right node.right_length forest
+  | x -> add_forest forest x len (* function or balanced *)
+	
   let balance r =
+    if height r < max_height then r else
     match r with
-        Empty | Leaf _ -> r
-      | _ ->
-          let forest = Array.init max_height (fun _ -> {c = Empty; len = 0}) in
-            balance_insert r (length r) forest;
-            concat_forest forest
-   
-  let bal_if_needed l r =
-    let r = make_concat l r in
-      if height r < max_height then r else balance r
-   
-  let concat_str l = function
-      Empty | Concat(_,_,_,_,_) -> invalid_arg "concat_str"
-    | Leaf (lenr, rs) as r ->
-        match l with
-          | Empty -> r
-          | Leaf (lenl, ls) ->
-              let slen = lenr + lenl in
-              if slen <= leaf_size then Leaf ((lenl+lenr),(str_append ls rs))
-              else make_concat l r (* height = 1 *)
-          | Concat(ll, cll, Leaf (lenlr ,lrs), clr, h) ->
-              let slen = clr + lenr in
-              if clr + lenr <= leaf_size then
-                Concat(ll, cll, Leaf ((lenlr + lenr),(str_append lrs rs)), slen, h)
-              else
-                bal_if_needed l r
-          | _ -> bal_if_needed l r
-   
-  let append_char c r = concat_str r (Leaf (1, (UTF8.make 1 c)))
+      Empty | Leaf _ -> r
+    | _ ->
+        let forest = Array.init max_height (fun _ -> {c = Empty; rlen = 0}) in
+        balance_insert r (length r) forest;
+        concat_forest forest
 
+  let bal_if_needed l r =
+    let r = make_concat l r in balance r
+      
+  let is_full_tail leaf = 
+    let tail = B.next leaf.b.s leaf.j in
+    B.equal_index leaf.b.s tail leaf.b.unused
+
+  let leaf_append leaf_l leaf_r =
+    let size_l = B.size leaf_l.b.s leaf_l.i (B.next leaf_l.b.s leaf_l.j) in
+    let size_r = B.size leaf_r.b.s leaf_r.i (B.next leaf_r.b.s leaf_r.j) in
+    if size_l + size_r <= leaf_size then begin
+      let leaf =
+	if size_l + size_r <= 
+	  B.size leaf_l.b.s leaf_l.i (B.end_pos leaf_l.b.s)
+	    && is_full_tail leaf_l 
+	then begin
+	  B.blit leaf_r.b.s leaf_r.i leaf_r.j leaf_l.b.s leaf_l.b.unused;
+	  let b = {leaf_l.b with unused = leaf_l.b.unused + size_r} in
+	  {b = b; 
+	   i = leaf_l.i;
+	   j = B.prev b.s b.unused;
+	   len = leaf_l.len + leaf_r.len} 
+	end else begin
+	  let s = B.create leaf_size in
+	  B.blit leaf_l.b.s leaf_l.i leaf_l.j s (B.first s);
+	  B.blit leaf_r.b.s leaf_r.i leaf_r.j s 
+	    (B.move_by_bytes s (B.first s) size_l);
+	  let b = {s = s; unused = size_l + size_r} in
+	  {b = b; 
+	   i = B.first s; 
+	   j = B.prev s (B.move_by_bytes s (B.first s) (size_l + size_r));
+	   len = leaf_l.len + leaf_r.len}
+	end in
+      Leaf leaf
+    end else
+      make_concat (Leaf leaf_l) (Leaf leaf_r) (* height = 1 *)
+	
+  let concat_leaf l leaf_r = 
+    match l with
+    | Empty -> Leaf leaf_r
+    | Leaf leaf_l -> leaf_append leaf_l leaf_r
+    | Concat node ->
+	match node.right with
+	  Leaf leaf_l ->
+	    Concat {node with right = leaf_append leaf_l leaf_r}
+	| _ -> bal_if_needed l (Leaf leaf_r)
+	      
   let append l = function
       Empty -> l
-    | Leaf _ as r -> concat_str l r
-    | Concat(Leaf (lenrl,rls),rlc,rr,rc,h) as r ->
-        (match l with
-            Empty -> r
-          | Concat(_,_,_,_,_) -> bal_if_needed l r
-          | Leaf (lenl, ls) ->
-              let slen = rlc + lenl in
-                if slen <= leaf_size then
-                  Concat(Leaf((lenrl+lenl),(str_append ls rls)), slen, rr, rc, h)
-                else
-                  bal_if_needed l r)
-    | r -> (match l with Empty -> r | _ -> bal_if_needed l r)
-   
-  let ( ^^^ ) = append
+    | Leaf leaf_r -> concat_leaf l leaf_r
+    | Concat node as r ->
+	match node.left with
+	  Leaf leaf_r ->
+	    (match l with
+	      Empty -> r
+	    | Concat _ -> bal_if_needed l r
+	    | Leaf leaf_l -> leaf_append leaf_l leaf_r)
+	| _ -> 
+	    match l with 
+	      Empty -> r
+	    | _ -> bal_if_needed l r
 
-  let prepend_char c r = append (Leaf (1,(UTF8.make 1 c))) r
-   
-  let get r i = 
-    let rec aux i = function
-      Empty -> raise Out_of_bounds
-    | Leaf (lens, s) ->
-        if i >= 0 && i < lens then UTF8.get s i
-        else raise Out_of_bounds
-    | Concat (l, cl, r, cr, _) ->
-        if i < cl then aux i l
-        else aux (i - cl) r
-    in aux i r
-   
-  let copy_set us cpos c =
-    let ipos = UTF8.ByteIndex.of_char_idx us cpos in 
-    let jpos = UTF8.ByteIndex.next us ipos in
-    let i = UTF8.ByteIndex.to_int ipos
-    and j = UTF8.ByteIndex.to_int jpos in
-    splice us i (j-i) (UTF8.of_char c)
+  let new_block_uchar u = 
+    let s = B.create leaf_size in
+    let k = B.write s (B.first s) u in
+    let b = {s = s; unused = k} in
+    Leaf {b = b; i = B.first s; j = B.first s; len = 1}
+
+  let is_full leaf =
+    B.compare_index leaf.b.s 
+      (B.next leaf.b.s leaf.j)
+      (B.end_pos leaf.b.s) >= 0
+
+  let leaf_append_uchar leaf u =
+    if not (is_full leaf) && is_full_tail leaf then
+      let k = B.write leaf.b.s leaf.b.unused u in
+      if B.equal_index leaf.b.s k leaf.b.unused then
+	make_concat (Leaf leaf) (new_block_uchar u)
+      else
+	let leaf = {leaf with j = leaf.b.unused; len = leaf.len + 1} in
+	leaf.b.unused <- k;
+	Leaf leaf
+    else
+      make_concat (Leaf leaf) (new_block_uchar u)
+	
+  let leaf_of_uchar u = 
+    let s = B.of_string_unsafe (UTF8.make 1 u) in
+    let b = {s = s; unused = B.end_pos s} in
+    {b = b; i = B.first b.s; j = B.first b.s; len = 1}
+
+  let of_uchar u = Leaf (leaf_of_uchar u)
       
-  let set r i v = 
-    let rec aux i = function
-        Empty -> raise Out_of_bounds
-      | Leaf (lens, s) ->
-  	if i >= 0 && i < lens then
-  	  let s = copy_set s i v in
-              Leaf (lens, s)
-  	else raise Out_of_bounds
-      | Concat(l, cl, r, cr, _) ->
-  	if i < cl then append (aux i l) r
-  	else append l (aux (i - cl) r)
-    in aux i r
+  let append_uchar l u = 
+    match l with
+    | Empty -> new_block_uchar u
+    | Leaf leaf_l -> leaf_append_uchar leaf_l u
+    | Concat node ->
+	match node.right with
+	  Leaf leaf_l ->
+	    Concat {node with 
+		    right = leaf_append_uchar leaf_l u;
+		    right_length = node.right_length + 1}
+	| _ -> bal_if_needed l (new_block_uchar u)
 
-
-  module Iter =
-  struct
-
-
-    (* Iterators are used for iterating efficiently over multiple ropes
-       at the same time *)
-
-    type iterator = {
-      mutable leaf : UTF8.t;
-      (* Current leaf in which the iterator is *)
-      mutable idx : UTF8.ByteIndex.b_idx;
-      (* Current byte position of the iterator *)
-      mutable rest : t list;
-      (* Ropes not yet visited *)
-    }
-
-    type t = iterator option
-
-    (* Initial iterator state: *)
-    let make rope = { leaf = UTF8.empty;
-                      idx = UTF8.ByteIndex.first;
-                      rest = if rope = Empty then [] else [rope] }
-
-    let rec next_leaf = function
-      | Empty :: l ->
-          next_leaf l
-      | Leaf(len, str) :: l ->
-          Some(str, l)
-      | Concat(left, left_len, right, right_len, height) :: l ->
-          next_leaf (left :: right :: l)
-      | [] ->
-          None
-
-    (* Advance the iterator to the next position, and return current
-       character: *)
-    let rec next iter =
-      if UTF8.ByteIndex.at_end iter.leaf iter.idx then
-        (* We are at the end of the current leaf, find another one: *)
-        match next_leaf iter.rest with
-          | None ->
-              None
-          | Some(leaf, rest) ->
-	      if leaf = "" then None else begin
-		iter.leaf <- leaf;
-		iter.idx <- UTF8.ByteIndex.next leaf UTF8.ByteIndex.first;
-		iter.rest <- rest;
-		Some(UTF8.ByteIndex.look leaf UTF8.ByteIndex.first)
-	      end
-      else begin
-        (* Just advance in the current leaf: *)
-        let ch = UTF8.ByteIndex.look iter.leaf iter.idx in
-        iter.idx <- UTF8.ByteIndex.next iter.leaf iter.idx;
-        Some ch
-      end
- 
-    (* Same thing but map leafs: *)
-    let rec next_map f iter =
-      if UTF8.ByteIndex.at_end iter.leaf iter.idx then
-        match next_leaf iter.rest with
-          | None ->
-              None
-          | Some(leaf, rest) ->
-              let leaf = f leaf in
-              iter.leaf <- leaf;
-              iter.idx <- UTF8.ByteIndex.next leaf UTF8.ByteIndex.first;
-              iter.rest <- rest;
-              Some(UTF8.ByteIndex.look leaf UTF8.ByteIndex.first)
-      else begin
-        let ch = UTF8.ByteIndex.look iter.leaf iter.idx in
-        iter.idx <- UTF8.ByteIndex.next iter.leaf iter.idx;
-        Some ch
-      end
-
-    (* Same thing but in reverse order: *)
-
-    let rec prev_leaf = function
-      | Empty :: l ->
-          prev_leaf l
-      | Leaf(len, str) :: l ->
-          Some(str, l)
-      | Concat(left, left_len, right, right_len, height) :: l ->
-          prev_leaf (right :: left :: l)
-      | [] ->
-          None
-
-    let prev iter =
-      if iter.idx = UTF8.ByteIndex.first then
-        match prev_leaf iter.rest with
-          | None ->
-              None
-          | Some(leaf, rest) ->
-              iter.leaf <- leaf;
-              iter.idx <- UTF8.ByteIndex.last leaf;
-              iter.rest <- rest;
-              Some(UTF8.ByteIndex.look leaf iter.idx)
-      else begin
-        iter.idx <- UTF8.ByteIndex.prev iter.leaf iter.idx;
-        Some(UTF8.ByteIndex.look iter.leaf iter.idx)
-      end
-  end
-
-  (* Can be improved? *)
-  let compare a b =
-    let ia = Iter.make a and ib = Iter.make b in
-    let rec loop _ =
-      match Iter.next ia, Iter.next ib with
-        | None, None -> 0
-        | None, _ -> -1
-        | _, None -> 1
-        | Some ca, Some cb ->
-            match UChar.compare ca cb with
-              | 0 -> loop ()
-              | n -> n
-    in
-    loop ()
-
-
-let of_ustring ustr =
-  (* We need fast access to raw bytes: *)
-  let bytes = UTF8.to_string_unsafe ustr in
-  let byte_length = String.length bytes in
-
-  (* - [rope] is the accumulator
-     - [start_byte_idx] is the byte position of the current slice
-     - [current_byte_idx] is the current byte position
-     - [slice_size] is the number of unicode characters contained
-     between [start_byte_idx] and [current_byte_idx] *)
-  let rec loop rope start_byte_idx current_byte_idx slice_size =
-    if current_byte_idx = byte_length then begin
-
-      if slice_size = 0 then
-        rope
-      else
-        add_slice rope start_byte_idx current_byte_idx slice_size
-
-    end else begin
-      let next_byte_idx = UTF8.next ustr current_byte_idx in
-
-      if slice_size = leaf_size then
-        (* We have enough unicode characters for this slice, extract
-           it and add a leaf to the rope: *)
-        loop (add_slice rope start_byte_idx current_byte_idx slice_size)
-          next_byte_idx next_byte_idx 0
-      else
-        loop rope start_byte_idx next_byte_idx (slice_size + 1)
-    end
-  and add_slice rope start_byte_idx end_byte_idx slice_size =
-    append rope (Leaf(slice_size,
-                      (* This is correct, we are just extracting a
-                         sequence of well-formed UTF-8 encoded unicode
-                         characters: *)
-                      UTF8.of_string_unsafe
-                        (String.sub bytes start_byte_idx (end_byte_idx - start_byte_idx))))
-  in
-  loop Empty 0 0 0
-
+  let init len f =
+    if len < 0 then failwith "Text.init: The length is minus" else
+    let s = B.init len f in
+    let b = {s = s; unused = B.end_pos s} in
+    Leaf {b = b; i = B.first s; j = B.prev s (B.end_pos s); len = len}
+      
   let of_string s =
-    (* Validate + unsafe to avoid an extra copy (it is OK because
-       of_ustring do not reuse its argument in the resulting rope): *)
-    UTF8.validate s;
-    of_ustring (UTF8.of_string_unsafe s)
+    match B.of_string s with
+      None -> None
+    | Some s ->
+	let b = {s = s; unused = B.end_pos s} in
+	Some (Leaf {b = b; i = B.first b.s; j = B.prev s (B.end_pos s);
+		    len = B.length s})
 
-  let append_us r us = append r (of_ustring us)
-
-  let rec make len c =
-    let rec concatloop len i r =
-      if i <= len then
-        (*TODO: test for sharing among substrings *)
-        concatloop len (i * 2) (append r r)
-      else r
-    in
-      if len = 0 then Empty
-      else if len <= leaf_size then Leaf (len, (UTF8.make len c))
-      else
-        let rope = concatloop len 2 (of_ustring (UTF8.make 1 c)) in
-          append rope (make (len - length rope) c)
-   
-  let of_uchar c = make 1 c
-  let of_char c = of_uchar (UChar.of_char c)
-
-  let sub r start len = 
-    let rec aux start len = function
-      Empty -> if start <> 0 || len <> 0 then raise Out_of_bounds else Empty
-    | Leaf (lens, s) ->
-        if len < 0 || start < 0 || start + len > lens then
-          raise Out_of_bounds
-        else if len > 0 then (* Leaf "" cannot happen *)
-          (try Leaf (len, (UTF8.sub s start len)) with _ -> raise Out_of_bounds)
-        else Empty
-    | Concat(l,cl,r,cr,_) ->
-        if start < 0 || len < 0 || start + len > cl + cr then raise Out_of_bounds;
-        let left =
-          if start = 0 then
-            if len >= cl then
-              l
-            else aux 0 len l
-          else if start > cl then Empty
-          else if start + len >= cl then
-            aux start (cl - start) l
-          else aux start len l in
-        let right =
-          if start <= cl then
-            let upto = start + len in
-              if upto = cl + cr then r
-              else if upto < cl then Empty
-              else aux 0 (upto - cl) r
-          else aux (start - cl) len r
-        in
-          append left right
-    in aux start len r
-   
-  let insert start rope r =
-    append (append (sub r 0 start) rope) (sub r start (length r - start))
-   
-  let remove start len r =
-    append (sub r 0 start) (sub r (start + len) (length r - start - len))
-   
-  let to_ustring r =
-    let rec strings l = function
-        Empty -> l
-      | Leaf (_,s) -> s :: l
-      | Concat(left,_,right,_,_) -> strings (strings l right) left
-    in
-      string_of_string_list (strings [] r)
-   
-  let rec bulk_iter f = function
-      Empty -> ()
-    | Leaf (_,s) -> f s
-    | Concat(l,_,r,_,_) -> bulk_iter f l; bulk_iter f r
-
-  let rec bulk_iteri ?(base=0) f = function
-      Empty -> ()
-    | Leaf (_,s) -> f base s
-    | Concat(l,cl,r,_,_) -> 
-        bulk_iteri ~base f l; 
-        bulk_iteri ~base:(base+cl) f r
-
-  let rec iter f = function
-      Empty -> ()
-    | Leaf (_,s) -> UTF8.iter f s
-    | Concat(l,_,r,_,_) -> iter f l; iter f r
-
-   
-  let rec iteri ?(base=0) f = function
-      Empty -> ()
-    | Leaf (_,s) ->
-	UTF8.iteri (fun j c -> f (base + j) c) s
-    | Concat(l,cl,r,_,_) -> iteri ~base f l; iteri ~base:(base + cl) f r
-   
-
-  let rec bulk_iteri_backwards ~top f = function
-      Empty -> ()
-    | Leaf (lens,s) -> f (top-lens) s (* gives f the base position, not the top *)
-    | Concat(l,_,r,cr,_) -> 
-        bulk_iteri_backwards ~top f r;
-        bulk_iteri_backwards ~top:(top-cr) f l
-
-  let rec range_iter f start len = function
-      Empty -> if start <> 0 || len <> 0 then raise Out_of_bounds
-    | Leaf (lens, s) ->
-        let n = start + len in
-        if start >= 0 && len >= 0 && n <= lens then
-    for i = start to n - 1 do
-            f (UTF8.look s (UTF8.nth s i)) (*TODO: use enum to iterate efficiently*)
-          done
-        else raise Out_of_bounds
-    | Concat(l,cl,r,cr,_) ->
-        if start < 0 || len < 0 || start + len > cl + cr then raise Out_of_bounds;
-        if start < cl then begin
-          let upto = start + len in
-            if upto <= cl then
-              range_iter f start len l
-            else begin
-              range_iter f start (cl - start) l;
-              range_iter f 0 (upto - cl) r
-            end
-        end else begin
-          range_iter f (start - cl) len r
-        end
-   
-  let rec range_iteri f ?(base = 0) start len = function
-      Empty -> if start <> 0 || len <> 0 then raise Out_of_bounds
-    | Leaf (lens, s) ->
-        let n = start + len in
-        if start >= 0 && len >= 0 && n <= lens then
-  	for i = start to n - 1 do
-            f (base+i) (UTF8.look s (UTF8.nth s i))
-  	    (*TODO: use enum to iterate efficiently*)
-          done
-        else raise Out_of_bounds
-    | Concat(l,cl,r,cr,_) ->
-        if start < 0 || len < 0 || start + len > cl + cr then raise Out_of_bounds;
-        if start < cl then begin
-          let upto = start + len in
-            if upto <= cl then
-              range_iteri f ~base start len l
-            else begin
-              range_iteri f ~base start (cl - start) l;
-              range_iteri f ~base:(base + cl - start) 0 (upto - cl) r
-            end
-        end else begin
-          range_iteri f ~base (start - cl) len r
-        end
-
-  let rec fold f a = function
-      Empty -> a
-    | Leaf (_,s) ->
-        UTF8.fold (fun a c -> f a c) a s
-    | Concat(l,_,r,_,_) -> fold f (fold f a l) r
-   
-  let rec bulk_fold f a = function
-    | Empty                  -> a
-    | Leaf   (_, s)          -> f a s
-    | Concat (l, _, r, _, _) -> bulk_fold f (bulk_fold f a l) r
-    
-  let to_string t =
-    (* We use unsafe version to avoid the copy of the non-reachable
-       temporary string: *)
-    UTF8.to_string_unsafe (to_ustring t)
-
-  let init len f = Leaf (len, UTF8.init len f)
-    
-  let of_string_unsafe s = of_ustring (UTF8.of_string_unsafe s)
-  let of_int i = of_string_unsafe (string_of_int i)
-  let of_float f = of_string_unsafe (string_of_float f)
-
-  let to_int r = int_of_string (UTF8.to_string_unsafe (to_ustring r))
-  let to_float r = float_of_string (UTF8.to_string_unsafe (to_ustring r))
-
-  let bulk_map f r = bulk_fold (fun acc s -> append_us acc (f s)) Empty r
-  let map f r = bulk_map (fun s -> UTF8.map f s) r
-
-  let bulk_filter_map f r = bulk_fold (fun acc s -> match f s with None -> acc | Some r -> append_us acc r) Empty r
-  let filter_map f r = bulk_map (UTF8.filter_map f) r
-
-  let filter f r = bulk_map (UTF8.filter f) r
-
-  let left r len  = sub r 0 len
-  let right r len = let rlen = length r in sub r (rlen - len) len
-  let head = left
-  let tail r pos = sub r pos (length r - pos)
-
-  let index r u =
-    let i = Iter.make r in
-    let rec loop n =
-      match Iter.next i with
-        | None  -> raise Not_found
-        | Some u' ->
-            if UChar.eq u u' then n else
-	    loop (n + 1)
-    in
-    loop 0
-
-
-  module Return : sig type 'a t
-    (** A label which may be used to return values of type ['a]*)
-        
-    val label : ('a t -> 'a) -> 'a
-    (** [label f] creates a new label [x] and invokes
-        [f x]. If, during the execution of [f], [return x v]
-        is invoked, the execution of [f x] stops
-        immediately and [label f] returns [v].
-        Otherwise, if [f x] terminates normally and
-        returns [y], [label f] returns [y].
-
-        Calling [return x v] from outside scope [f]
-        is a run-time error and causes termination
-        of the program.*)
-    val with_label  : ('a t -> 'a) -> 'a
-      (**as [label]*)
-
-    val return : 'a t -> 'a -> _
-    (** Return to a label. [return l v] returns
-        to the point where label [l] was obtained
-        and produces value [l].
-
-        Calling [return l v] from outside the scope
-        of [l] (i.e. the call to function [label]
-        which produced [l]) is a run-time error
-        and causes termination of the program.*)
-end = struct 
-    type 'a t = 'a option ref
+  let of_string_exn s = 
+    match of_string s with
+      None -> raise Malformed_code
+    | Some text -> text
 	  
-    exception Return
-	
-    let return label value =
-      label := Some value;
-      raise Return (*(Obj.repr label)*)
-	
-    let label f =
-      let r = ref None in
-      try   f r
-      with  Return when !r <> None -> (*[!r = None] may happen if the user has let the exception escape its scope *)
-	match !r with                (*in that case, we wish the exception to fall-through for debugging purposes*)
-	| None   -> assert false (*Should be impossible*)
-	| Some x -> 
-	    r := None;             (*Reset the trap for sanity checks should another exception escape scope    *)
-	    x                      (*(not that this should be possible in that case -- let's just be careful)  *)
-    let with_label = label
-  end
+  let of_ascii s =
+    match B.of_ascii s with
+      None -> None
+    | Some s ->
+	let b = {s = s; unused = B.end_pos s} in
+	Some (Leaf {b = b; i = B.first b.s; 
+		    j = B.move_by_bytes b.s (B.end_pos b.s) (-1); 
+		    len = B.length s})
 
-  let index_from r base item = 
-    Return.with_label (fun label ->
-  	        let index_aux i c = 
-  	          if c = item then Return.return label i
-  	        in
-  	        range_iteri index_aux ~base base (length r - base) r;
-  	        raise Not_found)
+  let of_ascii_exn s = 
+    match of_string s with
+      None -> raise Malformed_code
+    | Some text -> text
 
+  let of_latin1 s = 
+    init (String.length s) (fun i -> 
+      UChar.unsafe_chr (Char.code s.[i]))
 
-  let rindex r char = 
-    Return.with_label (fun label ->
-  	        let index_aux i us =
-  	          try 
-  	            let p = UTF8.rindex us char in
-  	            Return.return label (p+i)
-  	          with Not_found -> ()
-  	        in
-  	        bulk_iteri_backwards ~top:(length r) index_aux r;
-  	        raise Not_found)
+  let rec get t n =
+    match t with
+      Empty -> None
+    | Leaf leaf ->
+	if n >= leaf.len then None else
+	let i = B.move leaf.b.s leaf.i n in
+	Some (B.read leaf.b.s i)
+    | Concat node ->
+	if n < node.left_length then get node.left n else
+	let n = n - node.left_length in
+	get node.right n
 
-  let rindex_from r start char = 
-    let rsub = left r start in
-    (rindex rsub char)
+  let rec get_exn t n =
+    match t with
+      Empty -> invalid_arg "index out of bounds"
+    | Leaf leaf ->
+	if n >= leaf.len then invalid_arg "index out of bounds" else
+	let i = B.move leaf.b.s leaf.i n in
+	B.read leaf.b.s i
+    | Concat node ->
+	if n < node.left_length then get_exn node.left n else
+	let n = n - node.left_length in
+	get_exn node.right n
 
-  let contains r char = 
-    Return.with_label (fun label ->
-  	        let contains_aux us =
-  	          if UTF8.contains us char then Return.return label true
-  	        in
-  	        bulk_iter contains_aux r;
-  	        false)
+  (* In Left (p, t), p is the path to the parent and t is the right sibling.  *)
+  type path = Top | Left of path * t | Right of t * path 
 
-  let contains_from r start char = 
-    Return.with_label (fun label ->
-  	        let contains_aux c = if c = char then Return.return label true in
-  	        range_iter contains_aux start (length r - start) r;
-  	        false)
+  type iterator = {path : path; leaf : leaf; index : B.index}
 
-  let rcontains_from = contains_from
+  let empty_leaf = 
+    let base = {s = B.empty; unused = B.end_pos B.empty} in
+    {b = base; i = B.first B.empty; j = B.prev B.empty (B.first B.empty); len = 0} 
 
-  let equals r1 r2 = compare r1 r2 = 0
+  let rec first_leaf_sub path = function
+      Empty -> (Top, empty_leaf)
+    | Leaf leaf -> (path, leaf)
+    | Concat node ->
+	first_leaf_sub (Left (path, node.right)) node.left
+	    
+  let first_leaf = first_leaf_sub Top
 
-  let starts_with r prefix =
-    let ir = Iter.make r and iprefix = Iter.make prefix in
-    let rec loop _ =
-      match Iter.next iprefix with
-        | None -> true
-        | Some ch1 ->
-            match Iter.next ir with
-              | None -> false
-              | Some ch2 -> UChar.compare ch1 ch2 = 0 && loop ()
-    in
-    loop ()
+  let first t =
+    let p, leaf = first_leaf t in
+    {path = p; leaf = leaf; index = leaf.i}
 
-  let ends_with r suffix =
-    let ir = Iter.make r and isuffix = Iter.make suffix in
-    let rec loop _ =
-      match Iter.prev isuffix with
-        | None -> true
-        | Some ch1 ->
-            match Iter.prev ir with
-              | None -> false
-              | Some ch2 -> UChar.compare ch1 ch2 = 0 && loop ()
-    in
-    loop ()
+  let rec end_leaf_sub path = function
+      Empty -> (Top, empty_leaf)
+    | Leaf leaf -> (path, leaf)
+    | Concat node ->
+	end_leaf_sub (Right (node.left, path)) node.right
+	    
+  let end_leaf = end_leaf_sub Top
 
-  (** find [r2] within [r1] or raises Not_found *)
-  let find_from r1 ofs r2 =
-    let matchlen = length r2 in
-    let r2_string = to_ustring r2 in
-    let check_at pos = r2_string = (to_ustring (sub r1 pos matchlen)) in 
-    (* TODO: inefficient *)
-    Return.with_label (fun label -> 
-  	   for i = ofs to length r1 - matchlen do
-  	     if check_at i then Return.return label i
-  	   done;
-  	   raise Not_found)
+  let last t =
+    let p, leaf = end_leaf t in
+    {path = p; leaf = leaf; index = leaf.j}
 
-  let find r1 r2 = find_from r1 0 r2
+  let rec nth_aux p t n =
+    match t with
+      Empty -> None
+    | Leaf leaf ->
+	if n >= leaf.len then None else
+	let i = B.move leaf.b.s leaf.i n in
+	Some {path = p; leaf = leaf; index = i}
+    | Concat node ->
+	if n < node.left_length then 
+	  nth_aux (Left (p, node.right)) node.left n 
+	else
+	  let n = n - node.left_length in
+	  nth_aux (Right (node.left, p)) node.right n
 
-  let rfind_from r1 suf r2 =
-    let matchlen = length r2 in
-    let r2_string = to_ustring r2 in
-    let check_at pos = r2_string = (to_ustring (sub r1 pos matchlen)) in 
-    (* TODO: inefficient *)
-    Return.with_label (fun label -> 
-  	   for i = suf - (length r1 + 1 ) downto 0 do
-  	     if check_at i then Return.return label i
-  	   done;
-  	   raise Not_found)
+  let nth t n = nth_aux Top t n
 
-  let rfind r1 r2 = rfind_from r1 (length r2 - 1) r2
+  let rec nth_exn_aux p t n =
+    match t with
+      Empty -> invalid_arg "index out of bounds"
+    | Leaf leaf ->
+	if n >= leaf.len then invalid_arg "index out of bounds" else
+	let i = B.move leaf.b.s leaf.i n in
+        {path = p; leaf = leaf; index = i}
+    | Concat node ->
+	if n < node.left_length then 
+	  nth_exn_aux (Left (p, node.right)) node.left n 
+	else
+	  let n = n - node.left_length in
+	  nth_exn_aux (Right (node.left, p)) node.right n
 
+  let nth_exn t n = nth_exn_aux Top t n
 
-  let exists r_str r_sub = try ignore(find r_str r_sub); true with Not_found -> false
+  let rec next_leaf = function
+      Top -> None
+    | Left (p, t) ->
+	Some (first_leaf_sub p t)
+    | Right (t, p) ->
+	next_leaf p
 
-  let strip_default_chars = List.map UChar.of_char [' ';'\t';'\r';'\n']
-  let strip ?(chars=strip_default_chars) rope =
-    let rec strip_left n iter =
-      match Iter.next iter with
-        | None ->
-            Empty
-        | Some ch when List.mem ch chars ->
-            strip_left (n + 1) iter
-        | _ ->
-            sub rope n (strip_right (length rope - n) (Iter.make rope))
-    and strip_right n iter =
-      match Iter.prev iter with
-        | None ->
-            assert false
-        | Some ch when List.mem ch chars ->
-            strip_right (n - 1) iter
-        | _ ->
-            n
-    in
-    strip_left 0 (Iter.make rope)
+  let next it =
+    if (B.compare_index it.leaf.b.s it.index it.leaf.j >= 0) then 
+      match next_leaf it.path with 
+	None -> None
+      | Some (path, leaf) -> 
+	  Some {path = path; leaf = leaf; index = leaf.i}
+    else
+      let i = B.next it.leaf.b.s it.index in
+      Some {it with index = i} 
 
-  let lchop = function
-    | Empty -> Empty
-    | str -> sub str 1 (length str - 1)
-  let rchop = function
-    | Empty -> Empty
-    | str -> sub str 0 (length str - 1)
+  let next_exn it =
+    match next it with
+      None -> invalid_arg "index out of bounds"
+    | Some it -> it
 
+  let rec prev_leaf = function
+      Top -> None
+    | Left (p, t) ->
+	prev_leaf p
+    | Right (t, p) ->
+	Some (end_leaf_sub p t)
 
+  let prev it =
+    if not (B.equal_index it.leaf.b.s it.index it.leaf.i) then 
+      let i = B.prev it.leaf.b.s it.index in
+      Some {it with index = i} 
+    else match prev_leaf it.path with 
+      None -> None
+    | Some (path, leaf) -> 
+	Some {path = path; leaf = leaf; index = leaf.j}
 
-let of_list l =
-  let e = ref l in
-  let get_leaf () =
-    Return.label
-      (fun label ->
-	 let b = Buffer.create 256 in
-	 for i = 1 to 256 do
-	   match !e with
-	       []   -> Return.return label (false, UTF8.of_string_unsafe (Buffer.contents b))
-	     | c :: rest  -> Buffer.add_string b (UTF8.to_string_unsafe (UTF8.of_char c)); e := rest
-	 done;
-	 (true, UTF8.of_string_unsafe (Buffer.contents b) ))
-  in
-  let rec loop r = (* concat 256 characters at a time *)
-    match get_leaf () with
-	(true,  us) -> loop     (append r (of_ustring us))
-      | (false, us) -> append r (of_ustring us)
-  in
-  loop Empty
+  let prev_exn it =
+    if not (B.equal_index it.leaf.b.s it.index it.leaf.i) then 
+      let i = B.prev it.leaf.b.s it.index in
+      {it with index = i} 
+    else match prev_leaf it.path with 
+      None -> invalid_arg "index out of	bounds"
+    | Some (path, leaf) -> 
+	{path = path; leaf = leaf; index = leaf.j}
 
-  let splice r start len new_sub = 
-    let start = if start >= 0 then start else (length r) + start in
-    append (left r start) 
-      (append new_sub (tail r (start+len)))
+  let rec base_aux path sub =
+    match path with
+      Top -> sub
+    | Left (p, t) ->
+	base_aux p (make_concat sub t)
+    | Right (t, p) ->
+	base_aux p (make_concat t sub)
 
-  let fill r start len char = 
-    splice r start len (make len char)
+  let base it = balance (base_aux it.path (Leaf it.leaf))
 
-  let blit rsrc offsrc rdst offdst len = 
-    splice rdst offdst len (sub rsrc offsrc len)
+  let rec pos_path = function
+      Top -> 0
+    | Left (p, t) -> pos_path p
+    | Right (t, p) -> length t
 
+  let pos it = pos_path it.path + B.distance it.leaf.b.s it.leaf.i it.index 
 
-  let list_reduce f = function [] -> invalid_arg "Empty List"
-    | h::t -> List.fold_left f h t
+  let rec delete_left_pos path sub =
+    match path with
+      Top -> (path, sub)
+    | Left (p, t) -> delete_left_pos p t
+    | Right (t, p) -> (p, sub)
 
-  let concat sep r_list = 
-    if r_list = [] then empty else
-    list_reduce (fun r1 r2 -> append r1 (append sep r2)) r_list
+  let delete_left it =
+    let p, _ = delete_left_pos it.path (Leaf it.leaf) in
+    let leaf = {it.leaf with i = it.index; 
+		len = 1 + B.distance it.leaf.b.s it.index it.leaf.j} in
+    let it = {it with path = p; leaf = leaf} in
+    base it
 
-  (**T concat
-     concat (of_string "xyz") [] = empty
-  **)
+  let rec delete_right_pos path sub =
+    match path with
+      Top -> (path, sub)
+    | Right (t, p) -> delete_right_pos p t
+    | Left (p, t) -> (p, sub)
 
-  let escaped r = bulk_map UTF8.escaped r
+  let delete_right it =
+    let p, _ = delete_right_pos it.path (Leaf it.leaf) in
+    let leaf = {it.leaf with j = it.index; 
+		len = 1 + B.distance it.leaf.b.s it.leaf.i it.index} in
+    let it = {it with path = p; leaf = leaf} in
+    base it
 
-  let replace_chars f r = fold (fun acc s -> append_us acc (f s)) Empty r
+  let sub t ~pos ~len =
+    if len = 0 then Empty else
+    let pos, len =
+      if len >= 0 then pos, len else
+      pos + len + 1, -len in
+    let pos, len =
+      if pos >= 0 then pos, len else
+      0, pos + len in
+    match nth t pos with
+      None -> Empty
+    | Some it ->
+	let s = delete_left it in
+	match nth s (len - 1) with
+	  None -> s
+	| Some it ->
+	    delete_right it
 
-  let split r sep = 
-    let i = find r sep in
-    head r i, tail r (i+length sep)
+  let insert t pos text =
+    if pos = 0 then Some (append text t) else
+    if pos = length t then Some (append t text) else
+    match nth t pos with
+      None -> None
+    | Some it ->
+	let left = delete_right (prev_exn it) in 
+	let right = delete_left it in
+	Some (append (append left text) right)
 
-  let rsplit (r:t) sep = 
-    let i = rfind r sep in
-    head r i, tail r (i+length sep)
+  let insert_exn t pos text =
+    match insert t pos text with
+      None -> invalid_arg "index out of bound"
+    | Some t -> t
 
-  (**
-     An implementation of [nsplit] in one pass.
+  let delete t ~pos ~len =
+    let pos, len = if len >= 0 then pos, len else pos + len + 1, -len in
+    match nth t (pos - 1), nth t (pos + len) with
+      None, None -> Empty
+    | None, Some it -> delete_left it
+    | Some it, None -> delete_right it
+    | Some it1, Some it2 ->
+	let left = delete_right it1 in 
+	let right = delete_left it2 in
+	append left right
 
-     This implementation traverses the string backwards, hence building the list
-     of substrings from the end to the beginning, so as to avoid a call to [List.rev].
-  *)
-  let nsplit str sep =
-    if is_empty str then []
-    else let seplen = length sep in
-         let rec aux acc ofs = match 
-  	 try Some(rfind_from str ofs sep)
-  	 with Invalid_rope -> None
-         with Some idx -> 
-  	 (*at this point, [idx] to [idx + seplen] contains the separator, which is useless to us
-  	   on the other hand, [idx + seplen] to [ofs] contains what's just after the separator,
-  	   which is s what we want*)
-  	 let end_of_occurrence = idx + seplen in
-  	   if end_of_occurrence >= ofs then aux acc idx (*We may be at the end of the string*)
-  	   else aux ( sub str end_of_occurrence ( ofs - end_of_occurrence ) :: acc ) idx 
-  	 |  None     -> (sub str 0 ofs)::acc
-         in
-  	 aux [] (length str - 1 )
+  let value it = B.read it.leaf.b.s it.index
 
+  let fold_leaf leaf a f =
+    let rec loop a i =
+      if B.compare_index leaf.b.s i leaf.j > 0 then a else
+      let a' = f a (B.read leaf.b.s i) in
+      loop a' (B.next leaf.b.s i) in
+    loop a leaf.i
 
-  let join = concat
+  let rec fold t a f = 
+    match t with
+      Empty -> a
+    | Leaf leaf -> fold_leaf leaf a f
+    | Concat node ->
+	let a' = fold node.left a f in
+	fold node.right a' f
 
-  let slice ?(first=0) ?(last=max_int) s =
-    let clip _min _max x = int_max _min (int_min _max x) in
-    let i = clip 0 (length s)
-      (if (first<0) then (length s) + first else first)
-    and j = clip 0 (length s)
-      (if (last<0) then (length s) + last else last)
-    in
-      if i>=j || i=length s then
-        Empty
-      else
-        sub s i (j-i)
+  let iter t f =
+    let g () u = f u in
+    fold t () g
 
+  let rec compare_iterator it1 it2 =
+    let u1 = value it1 in
+    let u2 = value it2 in
+    let sgn = UChar.compare u1 u2 in
+    if sgn <> 0 then sgn else
+    match next it1, next it2 with
+      None, None -> 0
+    | None, _ -> -1
+    | _, None -> 1
+    | Some it1, Some it2 -> compare_iterator it1 it2
 
-  let replace ~str ~sub ~by = 
-    try
-      let i = find str sub in
-        (true, append (slice ~last:i str)  (append by 
-           (slice ~first:(i+(length sub)) str)))
-    with
-        Invalid_rope -> (false, str)
+  let compare t1 t2 = compare_iterator (first t1) (first t2)
 
+  let rec string_of_aux b = function
+      Empty -> ()
+    | Leaf leaf ->
+	B.add_substring b leaf.b.s leaf.i leaf.j
+    | Concat node ->
+	string_of_aux b node.left;
+	string_of_aux b node.right
 
-  let explode r = fold (fun a u -> u :: a) [] r
+  let string_of t =
+    let b = Buffer.create 0 in
+    string_of_aux b t;
+    Buffer.contents b
 
-  let implode l = of_list l
-
-  type t_alias = t (* fixes [type t = t] bug below *)
-
-
-  let of_latin1 s = of_ustring (UTF8.of_latin1 s)
-
-  (* =end *)
+  let to_string = string_of
+    
 end
+
 
 (** Aliase for Text.t *)
 type text = Text.t
-type cursor = int
+type cursor = Text.iterator
 
 module CharEncoding  = struct
 
@@ -1429,7 +1215,7 @@ module CharEncoding  = struct
           | None -> raise Out_of_range
         end in
       try 
-        `Success ((), (Text.iter conv text; Buffer.contents b))
+        `Success ((), (Text.iter text conv; Buffer.contents b))
       with 
           Out_of_range -> `Error
       
@@ -1475,7 +1261,7 @@ module CharEncoding  = struct
           | None -> raise Out_of_range
         end in
       try 
-        `Success ((), (Text.iter conv text; Buffer.contents b))
+        `Success ((), (Text.iter text conv; Buffer.contents b))
       with 
           Out_of_range -> `Error
       
@@ -1525,11 +1311,11 @@ module CharEncoding  = struct
       if i >= String.length s then (`Start, text) else
       let n = Char.code s.[i] in
       if n < 0x80 then 
-        decode_start s (i+1) (Text.append_char (UChar.chr n) text)
+        decode_start s (i+1) (Text.append_uchar text (UChar.chr n))
       else if n >= 0xc2 && n <= 0xf4 then
         decode_second n s (i+1) text
       else
-        decode_start s (i+1) (Text.append_char subst_char text) 
+        decode_start s (i+1) (Text.append_uchar text subst_char) 
     
     and decode_second a s i text =
       if i >= String.length s then (`Second a,  text) else
@@ -1538,49 +1324,49 @@ module CharEncoding  = struct
       if a >= 0xc2 && a <= 0xdf then
         if (n >= 0x80 && n <= 0xbf) then
           let n = (a - 0xc0) lsl 6 lor (0x7f land n) in
-          decode_start s (i+1) (Text.append_char (UChar.chr n) text)
+          decode_start s (i+1) (Text.append_uchar text (UChar.chr n))
         else
-          decode_start s i (Text.append_char subst_char text)
+          decode_start s i (Text.append_uchar text subst_char)
       (* 3-bytes code *)
       else if (a >= 0xe1 && a <= 0xec) || a = 0xee || a = 0xef then
         if (n >= 0x80 && n <= 0xbf) then
           let a = (a - 0xe0) lsl 6 lor (0x7f land n) in
           decode_trail 1 a s (i+1) text
         else
-          decode_start s i   (Text.append_char subst_char text)
+          decode_start s i   (Text.append_uchar text subst_char)
       else if a = 0xe0 then
         if n >= 0xa0 && n <= 0xbf then
           let a = 0x7f land n in
           decode_trail 1 a s (i+1) text
         else
-          decode_start s i (Text.append_char subst_char text)
+          decode_start s i (Text.append_uchar text subst_char)
       else if a = 0xed then 
         if n >= 0x80 && n <= 0x9f then
           let a = (a - 0xe0) lsl 6 lor (0x7f land n) in
           decode_trail 1 a s (i+1) text
         else
-          decode_start s i (Text.append_char subst_char text)
+          decode_start s i (Text.append_uchar text subst_char)
       (* 4-bytes code *) 
       else if a = 0xf0 then
         if n >= 0x90 && n <= 0xbf then
           let a = (a - 0xf0) lsl 6 lor (0x7f land n) in
           decode_trail 2 a s (i+1) text
         else
-          decode_start s i (Text.append_char subst_char text)
+          decode_start s i (Text.append_uchar text subst_char)
       else if a >= 0xf1 && a <= 0xf3 then
         if n >= 0x80 && n <= 0xbf then
           let a = (a - 0xf0) lsl 6 lor (0x7f land n) in
           decode_trail 2 a s (i+1) text
         else
-          decode_start s i (Text.append_char subst_char text)
+          decode_start s i (Text.append_uchar text subst_char)
       else if a = 0xf4 then
         if n >= 0x80 && n <= 0x8f then
           let a = (a - 0xf0) lsl 6 lor (0x7f land n) in
           decode_trail 2 a s (i+1) text
         else
-          decode_start s i (Text.append_char subst_char text)
+          decode_start s i (Text.append_uchar text subst_char)
       else      
-          decode_start s i (Text.append_char subst_char text)
+          decode_start s i (Text.append_uchar text subst_char)
 
     and decode_trail count a s i text =
           if i >= String.length s then (`Trail (count, a),  text) else  (* FIX ME *)
@@ -1588,13 +1374,13 @@ module CharEncoding  = struct
           if n >= 0x80 && n <= 0xbf then
           let a = a lsl 6 lor (0x7f land n) in
             if count = 1 then
-              decode_start s (i+1) (Text.append_char (UChar.chr a) text)
+              decode_start s (i+1) (Text.append_uchar text (UChar.chr a))
             else if count = 2 then
               decode_trail 1 a s (i+1) text
             else
               assert false
           else
-            decode_start s i (Text.append_char subst_char text)
+            decode_start s i (Text.append_uchar text subst_char)
 
     let decode st s =
       match st with
@@ -1631,7 +1417,7 @@ module CharEncoding  = struct
           Buffer.add_char b (Char.chr (n2 lsr 8));
 	  Buffer.add_char b (Char.chr (n2 land 0xff));
 	end in
-      `Success ((), (Text.iter conv text; Buffer.contents b))
+      `Success ((), (Text.iter text conv; Buffer.contents b))
       
     let terminate () = ""
   end
@@ -1656,19 +1442,19 @@ module CharEncoding  = struct
 	    if n >= 0xD800 && n <= 0xDBFF then
 	      `Surrogate n, text
 	    else if n >= 0xDC00 && n <= 0xDFFF then
-	      `Byte c, Text.append_char subst_char text
+	      `Byte c, Text.append_uchar text subst_char 
 	    else
-	      `Success, Text.append_char (UChar.of_int n) text 
+	      `Success, Text.append_uchar text (UChar.of_int n)
 	| `Surrogate n -> 
 	    if Char.code c < 0xDC or Char.code c > 0xdf then
-	      `Byte c, Text.append_char subst_char text 
+	      `Byte c, Text.append_uchar text subst_char 
 	    else
 	      `Surrogate_with_Byte (n, c), text
 	| `Surrogate_with_Byte (n0, c0) ->
 	    let n = Char.code c0 in
 	    let n = (n lsl 8) lor (Char.code c) in
 	    let n1 = 0x10000 + (n0 - 0xD800) lsl 10 lor (n - 0xDC00) in
-	    `Success, Text.append_char (UChar.of_int n1) text in
+	    `Success, Text.append_uchar text (UChar.of_int n1) in
       fold_string conv (state, Text.empty) s
 
     let terminate = function
@@ -1699,7 +1485,7 @@ module CharEncoding  = struct
 	  Buffer.add_char b (Char.chr (n2 land 0xff));
           Buffer.add_char b (Char.chr (n2 lsr 8));
 	end in
-      `Success ((), (Text.iter conv text; Buffer.contents b))
+      `Success ((), (Text.iter text conv; Buffer.contents b))
       
     let terminate () = ""
   end
@@ -1730,9 +1516,9 @@ module CharEncoding  = struct
 	    if n >= 0xD800 && n <= 0xDBFF then
 	      `Surrogate n, text
 	    else if n >= 0xDC00 && n <= 0xDFFF then
-	      `Byte c, Text.append_char subst_char text
+	      `Byte c, Text.append_uchar text subst_char 
 	    else
-	      `Success, Text.append_char (UChar.of_int n) text 
+	      `Success, Text.append_uchar text (UChar.of_int n)
 	| `Surrogate n -> 
 	      `Surrogate_with_Byte (n, c), text
 	| `Surrogate_with_Byte (n0, c0) ->
@@ -1740,9 +1526,9 @@ module CharEncoding  = struct
 	    let n = (n lsl 8) lor (Char.code c0) in
 	    if n >= 0xDC00 && n <= 0xDFFF then
 	      let n1 = 0x10000 + (n0 - 0xD800) lsl 10 lor (n - 0xDC00) in
-	      `Success, Text.append_char (UChar.of_int n1) text
+	      `Success, Text.append_uchar text (UChar.of_int n1) 
 	    else
-	      `Byte c, Text.append_char subst_char text
+	      `Byte c, Text.append_uchar text subst_char
       in
       fold_string conv (state, Text.empty) s
 
@@ -1840,7 +1626,7 @@ module CharEncoding  = struct
 	Buffer.add_char b (Char.chr ((n lsr 16) land 0xff));
 	Buffer.add_char b (Char.chr ((n lsr 8) land 0xff));
 	Buffer.add_char b (Char.chr (n land 0xff)) in
-      `Success ((), (Text.iter conv text; Buffer.contents b))
+      `Success ((), (Text.iter text conv; Buffer.contents b))
       
     let terminate () = ""
   end
@@ -1855,19 +1641,19 @@ module CharEncoding  = struct
       let conv ((n, i), text) c =
 	if i = 0 then
 	  if Char.code c > 0 then
-	    (0, 0), Text.append_char subst_char text
+	    (0, 0), Text.append_uchar text subst_char
 	  else
 	    (0, 1), text
 	else if i = 1 then
 	  if Char.code c > 0x10 then
-	    (0, 0), Text.append_char subst_char (Text.append_char subst_char text)
+	    (0, 0), Text.append_uchar (Text.append_uchar text subst_char) subst_char 
 	  else
 	    (Char.code c, 2), text
 	else if i = 2 then
 	  (n lsl 8 lor (Char.code c), 3), text
 	else if i = 3 then
 	  let n = n lsl 8 lor (Char.code c) in
-	  (0, 0), Text.append_char (UChar.of_int n) text
+	  (0, 0), Text.append_uchar text (UChar.of_int n) 
 	else assert false in
       fold_string conv (state, Text.empty) s
 
@@ -1892,7 +1678,7 @@ module CharEncoding  = struct
 	Buffer.add_char b (Char.chr ((n lsr 8) land 0xff));
 	Buffer.add_char b (Char.chr ((n lsr 16) land 0xff));
 	Buffer.add_char b (Char.chr (n lsr 24)) in
-      `Success ((), (Text.iter conv text; Buffer.contents b))
+      `Success ((), (Text.iter text conv; Buffer.contents b))
       
     let terminate () = ""
   end
@@ -1911,14 +1697,14 @@ module CharEncoding  = struct
 	  (n lor (Char.code c lsl 8), 2), text
 	else if i = 2 then
 	  if Char.code c > 0x10 then
-	    (Char.code c, 1), Text.append_char subst_char text
+	    (Char.code c, 1), Text.append_uchar text subst_char
 	  else
 	    (n lor (Char.code c lsl 16), 3), text
 	else if i = 3 then
 	  if Char.code c > 0 then
-	    (Char.code c, 1), Text.append_char subst_char text
+	    (Char.code c, 1), Text.append_uchar text subst_char
 	  else
-	    (0, 0), Text.append_char (UChar.of_int n) text
+	    (0, 0), Text.append_uchar text (UChar.of_int n) 
 	else assert false in
       fold_string conv (state, Text.empty) s
 
