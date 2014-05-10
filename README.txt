@@ -1,10 +1,16 @@
 (* OASIS_START *)
-(* DO NOT EDIT (digest: d2d6c6ee7a29897d1ffb899906c3f679) *)
-This is the README file for the ucorelib distribution.
+(* DO NOT EDIT (digest: 716a86fe475b94fbdff82d1e19870697) *)
 
-A light weight Unicode library for OCaml
+ucorelib - A light weight Unicode library for OCaml
+===================================================
 
-See the files INSTALL.txt for building and installation instructions. 
+See the file [INSTALL.txt](INSTALL.txt) for building and installation
+instructions.
 
+Copyright and license
+---------------------
+
+ucorelib is distributed under the terms of the GNU Lesser General Public
+License version 3.0 with OCaml linking exception.
 
 (* OASIS_STOP *)

@@ -1,6 +1,6 @@
 OASISFormat: 0.3
 Name:        ucorelib
-Version:     0.0.1
+Version:     0.1.0
 Synopsis:    A light weight Unicode library for OCaml
 Authors:     Yoriyuki Yamagata
 License:     LGPL-3.0 with OCaml linking exception

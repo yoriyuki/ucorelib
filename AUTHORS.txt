@@ -1,5 +1,8 @@
 (* OASIS_START *)
-(* DO NOT EDIT (digest: 5b1e74ee331affc29b3bb4b9cc1ba443) *)
-Authors of ucorelib
-Yoriyuki Yamagata
+(* DO NOT EDIT (digest: 2fb77beab3e3dbf44c3e98551a106a94) *)
+
+Authors of ucorelib:
+
+* Yoriyuki Yamagata
+
 (* OASIS_STOP *)
