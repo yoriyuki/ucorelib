@@ -73,24 +73,30 @@
 (* You can contact the authour by sending email to *)
 (* yoriyuki.y@gmail.com *)
 
-exception Out_of_range
-exception Malformed_code
-
 module UChar = struct 
   type t = int
       
   external code : t -> int = "%identity"
       
+  let char_of_exn c = 
+    if c >= 0 && c < 0x100 then Char.chr c else 
+    invalid_arg "Character out of range"  
+
   let char_of c = 
-    if c >= 0 && c < 0x100 then Char.chr c else raise Out_of_range
+    if c >= 0 && c < 0x100 then Some (Char.chr c) else None
       
   let of_char = Char.code
       
 (* valid range: U+0000..U+D7FF and U+E000..U+10FFFF *)
-  let chr n =
+  let chr_exn n =
     if (n >= 0 && n <= 0xd7ff) or (n >= 0xe000 && n <= 0x10ffff) 
     then n 
-    else raise Out_of_range
+    else invalid_arg "Code out of range"
+
+  let chr n =
+    if (n >= 0 && n <= 0xd7ff) or (n >= 0xe000 && n <= 0x10ffff) 
+    then Some n 
+    else None
 
   let unsafe_chr n = n
 
@@ -102,6 +108,7 @@ module UChar = struct
 	
   let int_of u = code u
   let of_int n = chr n
+  let of_int_exn n = chr_exn n
 
   let escape u = 
     let n = code u in
@@ -288,6 +295,8 @@ module UTF8 = struct
     let jpos = move s ipos len in
     String.sub s ipos (jpos-ipos)
       
+  exception Malformed_code
+
   let validate s =
     let rec trail c i a =
       if c = 0 then a else
@@ -780,7 +789,7 @@ module Text = struct
 
   let of_string_exn s = 
     match of_string s with
-      None -> raise Malformed_code
+      None -> invalid_arg "Malformed string"
     | Some text -> text
 	  
   let of_ascii s =
@@ -794,7 +803,7 @@ module Text = struct
 
   let of_ascii_exn s = 
     match of_string s with
-      None -> raise Malformed_code
+      None -> invalid_arg "Malformed string"
     | Some text -> text
 
   let of_latin1 s = 
@@ -1081,7 +1090,14 @@ type cursor = Text.iterator
 
 module CharEncoding  = struct
 
-  let subst_char = UChar.chr 0xfffd
+  exception Out_of_range
+
+  let subst_char = UChar.unsafe_chr 0xfffd
+
+  let chr_of n =
+    match UChar.chr n with
+      Some u -> u
+    | None -> subst_char
 
   let fold_string f a s =
     let ret = ref a in
@@ -1231,7 +1247,7 @@ module CharEncoding  = struct
     let decode () s =
       let conv i =
         if Char.code s.[i] < 0x80 then UChar.of_char s.[i] else
-        UChar.of_int 0xfffd in
+        subst_char in
       (), Text.init (String.length s) conv 
 
     let terminate () = Text.empty 
@@ -1311,7 +1327,7 @@ module CharEncoding  = struct
       if i >= String.length s then (`Start, text) else
       let n = Char.code s.[i] in
       if n < 0x80 then 
-        decode_start s (i+1) (Text.append_uchar text (UChar.chr n))
+        decode_start s (i+1) (Text.append_uchar text (chr_of n))
       else if n >= 0xc2 && n <= 0xf4 then
         decode_second n s (i+1) text
       else
@@ -1324,7 +1340,7 @@ module CharEncoding  = struct
       if a >= 0xc2 && a <= 0xdf then
         if (n >= 0x80 && n <= 0xbf) then
           let n = (a - 0xc0) lsl 6 lor (0x7f land n) in
-          decode_start s (i+1) (Text.append_uchar text (UChar.chr n))
+          decode_start s (i+1) (Text.append_uchar text (chr_of n))
         else
           decode_start s i (Text.append_uchar text subst_char)
       (* 3-bytes code *)
@@ -1374,7 +1390,7 @@ module CharEncoding  = struct
           if n >= 0x80 && n <= 0xbf then
           let a = a lsl 6 lor (0x7f land n) in
             if count = 1 then
-              decode_start s (i+1) (Text.append_uchar text (UChar.chr a))
+              decode_start s (i+1) (Text.append_uchar text (chr_of a))
             else if count = 2 then
               decode_trail 1 a s (i+1) text
             else
@@ -1444,7 +1460,7 @@ module CharEncoding  = struct
 	    else if n >= 0xDC00 && n <= 0xDFFF then
 	      `Byte c, Text.append_uchar text subst_char 
 	    else
-	      `Success, Text.append_uchar text (UChar.of_int n)
+	      `Success, Text.append_uchar text (chr_of n)
 	| `Surrogate n -> 
 	    if Char.code c < 0xDC or Char.code c > 0xdf then
 	      `Byte c, Text.append_uchar text subst_char 
@@ -1454,7 +1470,7 @@ module CharEncoding  = struct
 	    let n = Char.code c0 in
 	    let n = (n lsl 8) lor (Char.code c) in
 	    let n1 = 0x10000 + (n0 - 0xD800) lsl 10 lor (n - 0xDC00) in
-	    `Success, Text.append_uchar text (UChar.of_int n1) in
+	    `Success, Text.append_uchar text (chr_of n1) in
       fold_string conv (state, Text.empty) s
 
     let terminate = function
@@ -1518,7 +1534,7 @@ module CharEncoding  = struct
 	    else if n >= 0xDC00 && n <= 0xDFFF then
 	      `Byte c, Text.append_uchar text subst_char 
 	    else
-	      `Success, Text.append_uchar text (UChar.of_int n)
+	      `Success, Text.append_uchar text (chr_of n)
 	| `Surrogate n -> 
 	      `Surrogate_with_Byte (n, c), text
 	| `Surrogate_with_Byte (n0, c0) ->
@@ -1526,7 +1542,7 @@ module CharEncoding  = struct
 	    let n = (n lsl 8) lor (Char.code c0) in
 	    if n >= 0xDC00 && n <= 0xDFFF then
 	      let n1 = 0x10000 + (n0 - 0xD800) lsl 10 lor (n - 0xDC00) in
-	      `Success, Text.append_uchar text (UChar.of_int n1) 
+	      `Success, Text.append_uchar text (chr_of n1) 
 	    else
 	      `Byte c, Text.append_uchar text subst_char
       in
@@ -1653,7 +1669,7 @@ module CharEncoding  = struct
 	  (n lsl 8 lor (Char.code c), 3), text
 	else if i = 3 then
 	  let n = n lsl 8 lor (Char.code c) in
-	  (0, 0), Text.append_uchar text (UChar.of_int n) 
+	  (0, 0), Text.append_uchar text (chr_of n) 
 	else assert false in
       fold_string conv (state, Text.empty) s
 
@@ -1704,7 +1720,7 @@ module CharEncoding  = struct
 	  if Char.code c > 0 then
 	    (Char.code c, 1), Text.append_uchar text subst_char
 	  else
-	    (0, 0), Text.append_uchar text (UChar.of_int n) 
+	    (0, 0), Text.append_uchar text (chr_of n) 
 	else assert false in
       fold_string conv (state, Text.empty) s
 

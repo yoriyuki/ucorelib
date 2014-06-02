@@ -37,18 +37,16 @@
 (* You can contact the authour by sending email to *)
 (* yori@users.sourceforge.net *)
 
-(** Exceptions.  In addition, this module could raises Invalid_arg and*)
-(** BatNumber.Overflow *)	
-exception Out_of_range
-exception Malformed_code
-
+(* This module could raises Invalid_arg and BatNumber.Overflow *)	
 
 module UChar : sig
   type t
       
-(** [char_of u] returns the Latin-1 representation of [u].
-    If [u] can not be represented by Latin-1, raises Out_of_range *)
-  val char_of : t -> char
+(** [char_of_exn u] returns the Latin-1 representation of [u].
+    If [u] can not be represented by Latin-1, raises Invalid_arg
+    [char_of] returns [None] instead of raising Invalid_arg. *)
+  val char_of_exn : t -> char
+  val char_of : t -> char option
       
 (** [of_char c] returns the Unicode character of the Latin-1 character [c] *)
   val of_char : char -> t
@@ -58,8 +56,9 @@ module UChar : sig
       
 (** [chr n] returns the Unicode character with the code number [n]. 
     If n does not lay in the valid range of Unicode or designates a
-    surrogate charactor, raises Out_of_range *)
-  val chr : int -> t
+    surrogate charactor, returns [None] or raises invalid_arg *)
+  val chr : int -> t option
+  val chr_exn : int -> t
       
 (** Equality by code point comparison *)
   val eq : t -> t -> bool
@@ -81,7 +80,8 @@ module UChar : sig
   val int_of : uchar -> int
       
 (** Alias of [chr] *)
-  val of_int : int -> uchar
+  val of_int : int -> uchar option
+  val of_int_exn : int -> uchar
 end
 
 (** Aliase for UChar.t *)
