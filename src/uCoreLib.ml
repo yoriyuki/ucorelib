@@ -121,6 +121,15 @@ end
 
 type uchar = UChar.t
 
+module USet = struct
+  include BatISet
+end
+
+module UMap = struct 
+  include BatIMap
+end
+
+
 (** UTF-8 encoded Unicode strings. The type is normal string. *)
 
 (* Copyright (C) 2002, 2003 Yamagata Yoriyuki.  *)
