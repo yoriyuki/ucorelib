@@ -89,12 +89,12 @@ module UChar = struct
       
 (* valid range: U+0000..U+D7FF and U+E000..U+10FFFF *)
   let chr_exn n =
-    if (n >= 0 && n <= 0xd7ff) or (n >= 0xe000 && n <= 0x10ffff) 
+    if (n >= 0 && n <= 0xd7ff) || (n >= 0xe000 && n <= 0x10ffff) 
     then n 
     else invalid_arg "Code out of range"
 
   let chr n =
-    if (n >= 0 && n <= 0xd7ff) or (n >= 0xe000 && n <= 0x10ffff) 
+    if (n >= 0 && n <= 0xd7ff) || (n >= 0xe000 && n <= 0x10ffff) 
     then Some n 
     else None
 
@@ -328,7 +328,7 @@ module UTF8 = struct
 	main (i + 3)
       else if n <= 0xf4 then 
 	let n = trail 3 (i + 1) (n - 0xf0) in
-	if n < 0x10000 or n > 0x10FFFF then raise Malformed_code else
+	if n < 0x10000 || n > 0x10FFFF then raise Malformed_code else
 	main (i + 4)
       else raise Malformed_code in
     main 0
@@ -1471,7 +1471,7 @@ module CharEncoding  = struct
 	    else
 	      `Success, Text.append_uchar text (chr_of n)
 	| `Surrogate n -> 
-	    if Char.code c < 0xDC or Char.code c > 0xdf then
+	    if Char.code c < 0xDC || Char.code c > 0xdf then
 	      `Byte c, Text.append_uchar text subst_char 
 	    else
 	      `Surrogate_with_Byte (n, c), text
