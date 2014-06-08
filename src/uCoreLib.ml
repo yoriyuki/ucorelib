@@ -127,6 +127,12 @@ end
 
 module UMap = struct 
   include BatIMap
+
+  let find_exn = find
+  let find_opt u m =
+    try Some (find_exn u m) with Not_found -> None
+
+  let modify_exn = modify
 end
 
 
