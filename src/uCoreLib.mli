@@ -222,6 +222,10 @@ module USet : sig
 
 end
 
+module UMap : sig
+
+end
+
 module Text : sig
 
   type t
