@@ -12,7 +12,7 @@ Library ucorelib
   Modules:    UCoreLib
   Build: true
   Install: true
-  BuildDepends: batteries (>= 2.1)
+  BuildDepends: batteries (>= 2.1), bitv (>= 1.1)
      
 Executable test
   BuildTools: ocamlbuild

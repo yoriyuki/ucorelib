@@ -1,5 +1,5 @@
 (* OASIS_START *)
-(* DO NOT EDIT (digest: d956617c289288b15fb2cc1647b91cf4) *)
+(* DO NOT EDIT (digest: 81bc569ffe611256187437348c13708d) *)
 
 This is the INSTALL file for the ucorelib distribution.
 
@@ -14,6 +14,7 @@ In order to compile this package, you will need:
 * ocaml
 * findlib
 * batteries (>= 2.1) for library ucorelib
+* bitv (>= 1.1) for library ucorelib
 * oUnit for executable test
 
 Installing

@@ -34,6 +34,8 @@
 (* You can contact the authour by sending email to *)
 (* yoriyuki.y@gmail.com *)
 
+
+module UChar = struct 
 (** Unicode (ISO-UCS) characters.
 
    This module implements Unicode characters.
@@ -72,8 +74,6 @@
 
 (* You can contact the authour by sending email to *)
 (* yoriyuki.y@gmail.com *)
-
-module UChar = struct 
   type t = int
       
   external code : t -> int = "%identity"
@@ -135,6 +135,421 @@ module UMap = struct
   let modify_exn = modify
 end
 
+module Tbl21 = struct
+  (** Tbl21 : fast table keyed by integers *)
+  (* Copyright (C) 2002, 2003, 2014 Yamagata Yoriyuki *)
+
+  (* This library is free software; you can redistribute it and/or *)
+  (* modify it under the terms of the GNU Lesser General Public License *)
+  (* as published by the Free Software Foundation; either version 2 of *)
+  (* the License, or (at your option) any later version. *)
+
+  (* As a special exception to the GNU Library General Public License, you *)
+  (* may link, statically or dynamically, a "work that uses this library" *)
+  (* with a publicly distributed version of this library to produce an *)
+  (* executable file containing portions of this library, and distribute *)
+  (* that executable file under terms of your choice, without any of the *)
+  (* additional requirements listed in clause 6 of the GNU Library General *)
+  (* Public License. By "a publicly distributed version of this library", *)
+  (* we mean either the unmodified Library as distributed by the authors, *)
+  (* or a modified version of this library that is distributed under the *)
+  (* conditions defined in clause 3 of the GNU Library General Public *)
+  (* License. This exception does not however invalidate any other reasons *)
+  (* why the executable file might be covered by the GNU Library General *)
+  (* Public License . *)
+
+  (* This library is distributed in the hope that it will be useful, *)
+  (* but WITHOUT ANY WARRANTY; without even the implied warranty of *)
+  (* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU *)
+  (* Lesser General Public License for more details. *)
+
+  (* You should have received a copy of the GNU Lesser General Public *)
+  (* License along with this library; if not, write to the Free Software *)
+  (* Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 *)
+  (* USA *)
+
+  (* You can contact the authour by sending email to *)
+  (* yoriyuki.y@gmail.com *)
+
+
+  (* CRC-hash, algorithm comes from addnode.c/pathalias *)
+  (* 31-bits CRC-polynomial, by Andrew Appel*)
+  let poly = 0x48000000
+
+  let crc_tbl = Array.init 128 (fun i ->
+    let rec loop j sum =
+      if j < 0 then sum else
+      if i land (1 lsl j) <> 0 then
+	loop (j - 1) (sum lxor (poly lsr j))
+      else
+	loop (j - 1) sum in
+    loop (7 - 1) 0)
+      
+  let byte2 n = n lsr 16 land 255
+  let byte1 n = n lsr 8 land 255
+  let byte0 n = n land 255
+      
+  let (lsl) x n =
+    if n >= Sys.word_size then 0 else
+    if n <= ~- Sys.word_size then 0 else
+    if n < 0 then x lsr (~-n) else
+    x lsl n
+
+  let byte st n =
+    match st with
+      0 -> byte0 n | 1 -> byte1 n | 2 -> byte2 n
+    | _ -> assert false
+	  
+  type 'a tbl = 'a array array array
+  type 'a t = 'a tbl
+	
+  type 'a tagged = Tag of 'a * int
+      
+  let untag (Tag (a, _)) = a
+  let id (Tag (_, n)) = n
+      
+  let get tbl n =
+    let lev = Array.unsafe_get tbl (byte2 n) in
+    let lev = Array.unsafe_get lev (byte1 n) in
+    Array.unsafe_get lev (byte0 n)
+
+(* let get tbl n =
+   Printf.printf "level 3 %d" (Array.length tbl); print_newline ();
+   let lev = tbl.(byte3 n) in
+   Printf.printf "level 2 %d" (Array.length tbl); print_newline ();
+   let lev = lev.(byte2 n) in
+   Printf.printf "level 1 %d" (Array.length tbl); print_newline ();
+   let lev = lev.(byte1 n) in
+   Printf.printf "level 0 %d" (Array.length tbl); print_newline ();
+   lev.(byte0 n) *)
+
+  module type NodeType = sig 
+    type elt
+    type t
+    val level : int
+    val make : elt -> t tagged
+    val of_map : int -> elt -> elt BatIMap.t -> t tagged
+    val of_set : int -> elt -> BatISet.t -> elt -> t tagged
+  end
+	
+  module MakeNode (Sub : NodeType) = struct
+    type elt = Sub.elt
+    type node = Sub.t array
+    type t = node
+	  
+    let level = Sub.level + 1
+	
+    module NodeHash = struct
+      type t = node tagged
+	    
+      let equal x y =
+	let a = untag x in
+	let b = untag y in
+	let rec loop i =
+	  if i < 0 then true else
+	  if a.(i) == b.(i) then loop (i - 1) else
+	  false in
+	loop  (if level = 2 then 0x10 else 255)
+	  
+      let hash = id
+    end
+	
+    module NodePool = Weak.Make (NodeHash)
+    let pool = NodePool.create 256
+	
+    let crc_hash v =
+      let rec loop i sum =
+	if i < 0 then sum else
+	let a = id v.(i) in
+	let sum = sum lsr 7 lxor crc_tbl.(sum lxor (byte2 a) land 0x7f) in
+	let sum = sum lsr 7 lxor crc_tbl.(sum lxor (byte1 a) land 0x7f) in
+	let sum = sum lsr 7 lxor crc_tbl.(sum lxor (byte0 a) land 0x7f) in
+	loop (i - 1) sum in
+      loop (if level = 2 then 0x10 else 255) 0
+	
+    let hashcons a =
+      let n = crc_hash a in
+      let b = Array.map untag a in
+(*    prerr_int (Array.length b); prerr_newline(); *)
+      let x = Tag (b, n) in
+      try NodePool.find pool x with Not_found ->
+	NodePool.add pool x;
+	x
+
+    let make_raw def = 
+      Array.make (if level = 2 then 0x11 else 256) (Sub.make def)
+	
+    let make def = hashcons (make_raw def)
+
+    (* !!!write better code!!! *)
+    let of_map n0 def m =
+      let a = make_raw def in begin
+	if BatIMap.is_empty m then () else
+	let s = BatIMap.domain m in
+	let l = BatAvlTree.left_branch s in
+	let r = BatAvlTree.right_branch s in
+	if BatISet.is_empty l && BatISet.is_empty r then
+	  let k1, k2 = BatAvlTree.root s in
+	  let v = BatIMap.find k1 m in
+	  let i1 = (k1 - n0) lsr (8 * level) in
+	  let n1 = n0 lor (i1 lsl (8 * level)) in
+	  let n2 = n1 lor (1 lsl (8 * level) - 1) in
+	  a.(i1) <- Sub.of_map n1 def (BatIMap.until n2 (BatIMap.from n1 m));
+	  let i2 = (k2 - n0) lsr (8 * level) in
+	  if i1 <> i2 then
+	    let n1 = n0 lor (i2 lsl (8 * level)) in
+	    let n2 = n1 lor (1 lsl (8 * level) - 1) in
+	    a.(i2) <- Sub.of_map n1 def (BatIMap.until n2 (BatIMap.from n1 m));
+	    let b = Sub.make v in
+	    for i = i1 + 1 to i2 - 1 do a.(i) <- b done;
+	  else ()
+	else
+	  for i = 0 to if level = 2 then 0x10 else 255 do
+	    let n1 = n0 lor (i lsl (8 * level)) in
+	    let n2 = n1 lor (1 lsl (8 * level) - 1) in
+	    let m' = BatIMap.until n2 (BatIMap.from n1 m) in
+	    if BatIMap.is_empty m' then () else
+	    a.(i) <- Sub.of_map n1 def m'
+	  done
+      end;
+      hashcons a
+
+    let of_set n0 def s v =
+      let a = make_raw def in
+      for i = 0 to if level = 2 then 0x10 else 255 do
+	let n1 = n0 lor (i lsl (8 * level)) in
+	let n2 = n1 lor (1 lsl (8 * level) - 1) in
+	let s' = BatISet.until n2 (BatISet.from n1 s) in
+	if BatISet.is_empty s' then () else
+	a.(i) <- Sub.of_set n1 def s' v
+      done;
+      hashcons a
+  end
+
+  module MakeTbl (Lev0 : NodeType) = struct
+    module Lev1 = MakeNode (Lev0)
+    module Lev2 = MakeNode (Lev1)
+    include Lev2
+
+    let get = get
+
+    let of_map def m = untag (Lev2.of_map 0 def m)
+  end
+
+  module ArrayLeaf (H : Hashtbl.HashedType) = struct
+    type elt = H.t
+    type t = elt array
+    type node = t
+    let level = 0
+
+    module NodeHash = struct
+      type t = node tagged
+
+      let equal x y =
+	let a = untag x in
+	let b = untag y in
+	let rec loop i =
+	  if i >= 255 then true else
+	  if H.equal a.(i) b.(i) then loop (i + 1) else
+	  false in
+	loop 0
+
+      let hash = id
+    end
+
+    module Pool = Weak.Make (NodeHash)
+
+    let pool = Pool.create 256
+
+    let crc_hash v =
+      let rec loop i sum =
+	if i < 0 then sum else
+	let a = H.hash v.(i) in
+	let sum = sum lsr 7 lxor crc_tbl.(sum lxor (byte2 a) land 0x7f) in
+	let sum = sum lsr 7 lxor crc_tbl.(sum lxor (byte1 a) land 0x7f) in
+	let sum = sum lsr 7 lxor crc_tbl.(sum lxor (byte0 a) land 0x7f) in
+	loop (i - 1) sum in
+      loop 255 0
+
+    let hashcons a =
+      let n = crc_hash a in
+      let x = Tag (a, n) in
+      try Pool.find pool x with Not_found -> 
+	Pool.add pool x;
+	x
+
+    let make_raw def = Array.make 256 def
+    let make def = hashcons (make_raw def)
+
+    let of_map n0 def m =
+      let a = make_raw def in
+      BatIMap.iter_range (fun n1 n2 v ->
+(*       Printf.eprintf "Tl31.ArrayLeaf.of_map : %x %x - %x: %s\n" n0 n1 n2 *)
+(* 	(String.escaped (Obj.magic v)); *)
+	for i = n1 - n0 to n2 - n0 do a.(i) <- v done)
+	m;
+      hashcons a
+
+    let of_set n0 def s v =
+      let a = make_raw def in
+      BatISet.iter_range (fun n1 n2 ->
+	for i = n1 - n0 to n2 - n0 do a.(i) <- v done)
+	s;
+      hashcons a
+  end
+
+  module type Type = sig
+    type elt
+    type t = elt tbl
+    val get : elt tbl -> int -> elt
+    val of_map : elt -> elt BatIMap.t -> elt tbl
+  end
+
+  module Make (H : Hashtbl.HashedType) = MakeTbl(ArrayLeaf(H))
+
+  module StringContentsHash = struct
+    type t = string tagged
+
+    let equal x1 x2 =
+      let s1 = untag x1 in
+      let s2 = untag x2 in
+      if String.length s1 <> String.length s2 then false else
+      let rec loop i =
+	if i < 0 then true else
+	if s1.[i] <> s2.[i] then false else
+	loop (i - 1) in
+      loop (String.length s1 - 1)
+
+    let hash = id
+
+  end
+
+  module BitvHash = struct
+    type t = Bitv.t tagged
+
+    let equal x1 x2 =
+      let v1 = untag x1 in
+      let v2 = untag x2 in
+      if Bitv.length v1 <> Bitv.length v2 then false else
+      let s1 = Bitv.L.to_string v1 in
+      let s2 = Bitv.L.to_string v2 in
+      let rec loop i =
+	if i < 0 then true else
+	if s1.[i] <> s2.[i] then false else
+	loop (i - 1) in
+      loop (String.length s1 - 1)
+
+    let hash = id
+
+  end
+
+  let string_hash v =
+    let rec loop i sum =
+      if i < 0 then sum else
+      let a = Char.code v.[i] in
+      let sum = sum lsr 7 lxor crc_tbl.(sum lxor a land 0x7f) in
+      loop (i - 1) sum in
+    loop (String.length v - 5) 0
+
+  module BoolLeaf = struct
+    type elt = bool
+    type t = Bitv.t
+    let level = 0
+
+    module Pool = Weak.Make (BitvHash)
+    let pool = Pool.create 256
+
+    let hashcons s = 
+      let n = string_hash (Bitv.L.to_string s) in
+      let x = Tag (s, n) in
+      try Pool.find pool x with Not_found -> 
+	Pool.add pool x;
+	x
+
+    let make_raw def = Bitv.create 32 def
+
+    let make def = hashcons (make_raw def)
+
+    let boolget = Bitv.get
+
+    let boolset = Bitv.set
+
+    let of_map n0 def m =
+      let a = make_raw def in
+      BatIMap.iter_range (fun n1 n2 v ->
+	for i = n1 - n0 to n2 - n0 do boolset a i v done)
+	m;
+      hashcons a
+
+    let of_set n0 def s v =
+      let a = make_raw def in
+      BatISet.iter_range (fun n1 n2 ->
+	for i = n1 - n0 to n2 - n0 do boolset a i v done)
+	s;
+      hashcons a
+  end
+
+  module Bool = struct
+    module BoolTbl = MakeTbl (BoolLeaf)
+    include BoolTbl
+
+    let of_set s = untag (BoolTbl.of_set 0 false s true)
+
+    let get tbl n =
+      let lev = Array.unsafe_get tbl (byte2 n) in
+      let lev = Array.unsafe_get lev (byte1 n) in
+      let k = byte0 n in
+      Bitv.get lev k
+  end
+
+  module CharLeaf = struct
+    type elt = char
+    type t = string
+    let level = 0
+
+    module Pool = Weak.Make (StringContentsHash)
+    let pool = Pool.create 256
+
+    let hashcons s = 
+      let n = string_hash s in
+      let x = Tag (s, n) in
+      try Pool.find pool x with Not_found -> 
+	Pool.add pool x;
+	x
+
+    let make_raw c = String.make 256 c
+    let make c = hashcons (make_raw c)
+
+    let of_map n0 def m =
+      let a = make_raw def in
+      BatIMap.iter_range (fun n1 n2 v ->
+	for i = n1 - n0 to n2 - n0 do a.[i] <- v done)
+	m;
+      hashcons a
+
+    let of_set n0 def s v =
+      let a = make_raw def in
+      BatISet.iter_range (fun n1 n2 ->
+	for i = n1 - n0 to n2 - n0 do a.[i] <- v done)
+	s;
+      hashcons a
+  end
+
+  module Char = struct
+    module CharTbl = MakeTbl (CharLeaf)
+    include CharTbl
+
+    let get tbl n =
+      let lev = Array.unsafe_get tbl (byte2 n) in
+      let lev = Array.unsafe_get lev (byte1 n) in
+      String.unsafe_get lev (byte0 n)
+  end
+ 
+ end
+
+module UCharTbl = struct
+  include Tbl21
+end
 
 (** UTF-8 encoded Unicode strings. The type is normal string. *)
 

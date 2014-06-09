@@ -1,8 +1,8 @@
 # OASIS_START
-# DO NOT EDIT (digest: 198216766602dcc08f1b2a191d2f0686)
+# DO NOT EDIT (digest: 29b817078e2897c9b458828639658ec8)
 version = "0.1.0"
 description = "A light weight Unicode library for OCaml"
-requires = "batteries"
+requires = "batteries bitv"
 archive(byte) = "ucorelib.cma"
 archive(byte, plugin) = "ucorelib.cma"
 archive(native) = "ucorelib.cmxa"
